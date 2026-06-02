@@ -426,14 +426,20 @@ export interface Cable {
   // --- A-side termination ---
   /** Placed device UUID (A-side) */
   a_device_id: string;
-  /** Interface name on A-side device */
-  a_interface: string;
+  /**
+   * Optional interface/port name on A-side device (free text, e.g. 'Gi1/0/1').
+   * Omitted for device-to-device cables on devices without defined ports.
+   */
+  a_interface?: string;
 
   // --- B-side termination ---
   /** Placed device UUID (B-side) */
   b_device_id: string;
-  /** Interface name on B-side device */
-  b_interface: string;
+  /**
+   * Optional interface/port name on B-side device (free text, e.g. 'Gi1/0/1').
+   * Omitted for device-to-device cables on devices without defined ports.
+   */
+  b_interface?: string;
 
   // --- Cable properties ---
   /** Cable type (e.g., 'cat6a', 'smf-os2') */

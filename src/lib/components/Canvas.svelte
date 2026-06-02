@@ -27,6 +27,7 @@
   import { dispatchContextMenuAtPoint } from "$lib/utils/context-menu";
   import { hapticSuccess, hapticTap } from "$lib/utils/haptics";
   import RackDualView from "./RackDualView.svelte";
+  import CableOverlay from "./CableOverlay.svelte";
   import BayedRackView from "./BayedRackView.svelte";
   import WelcomeScreen from "./WelcomeScreen.svelte";
   import CanvasContextMenu from "./CanvasContextMenu.svelte";
@@ -874,6 +875,9 @@
             </div>
           {/each}
         </div>
+
+        <!-- Cable connector lines (overlaid; inherits pan/zoom transform) -->
+        <CableOverlay />
       </div>
     {:else}
       <WelcomeScreen onclick={handleNewRack} />
@@ -898,6 +902,8 @@
     transform-origin: 0 0;
     touch-action: none;
     cursor: grab;
+    /* Anchor the absolutely-positioned CableOverlay to this content box */
+    position: relative;
   }
 
   .panzoom-container:active {

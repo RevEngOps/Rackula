@@ -14,9 +14,9 @@ import { getLayoutStore } from "./layout.svelte";
  */
 export interface CreateCableInput {
   a_device_id: string;
-  a_interface: string;
+  a_interface?: string;
   b_device_id: string;
-  b_interface: string;
+  b_interface?: string;
   type?: CableType;
   color?: string;
   label?: string;
@@ -50,101 +50,59 @@ export function validateCable(
     Cable,
     "a_device_id" | "a_interface" | "b_device_id" | "b_interface"
   >,
-  cables: Cable[],
-  excludeCableId?: string,
+  // Kept for API/signature compatibility. Duplicate-blocking is intentionally
+  // disabled: multiple cables (each with its own colour/length) are allowed
+  // between the same two devices.
+  _cables: Cable[] = [],
+  _excludeCableId?: string,
 ): CableValidationResult {
   const errors: string[] = [];
   const layoutStore = getLayoutStore();
-  const rack = layoutStore.rack;
   const device_types = layoutStore.device_types;
 
-  // Check A-side device exists
-  const aDevice = rack.devices.find((d) => d.id === cable.a_device_id);
+  // Devices may live in any rack — search across the whole layout.
+  const allDevices = layoutStore.racks.flatMap((r) => r.devices);
+  const findDevice = (id: string) => allDevices.find((d) => d.id === id);
+
+  const aDevice = findDevice(cable.a_device_id);
   if (!aDevice) {
     errors.push(`A-side device not found: ${cable.a_device_id}`);
   }
 
-  // Check B-side device exists
-  const bDevice = rack.devices.find((d) => d.id === cable.b_device_id);
+  const bDevice = findDevice(cable.b_device_id);
   if (!bDevice) {
     errors.push(`B-side device not found: ${cable.b_device_id}`);
   }
 
-  // Check A-side interface exists on device type
-  if (aDevice) {
-    const aDeviceType = device_types.find(
-      (dt) => dt.slug === aDevice.device_type,
-    );
-    if (aDeviceType?.interfaces) {
-      const hasInterface = aDeviceType.interfaces.some(
-        (iface) => iface.name === cable.a_interface,
-      );
-      if (!hasInterface) {
+  // Interfaces are optional (device-to-device cabling). Only validate an
+  // interface name when one is supplied AND the device type defines ports.
+  const validateInterface = (
+    device: (typeof allDevices)[number] | undefined,
+    iface: string | undefined,
+    side: "A" | "B",
+  ) => {
+    if (!device || !iface) return;
+    const dt = device_types.find((t) => t.slug === device.device_type);
+    if (dt?.interfaces && dt.interfaces.length > 0) {
+      const exists = dt.interfaces.some((i) => i.name === iface);
+      if (!exists) {
         errors.push(
-          `Interface '${cable.a_interface}' not found on device type '${aDevice.device_type}'`,
+          `${side}-side interface '${iface}' not found on device type '${device.device_type}'`,
         );
       }
     } else {
-      // Device type has no interfaces defined - allow any interface name
-      // This supports user-defined cables on devices without explicit interface templates
       debug.warn(
-        `Cable validation: Device type '${aDevice.device_type}' has no interfaces defined. Interface '${cable.a_interface}' will not be validated.`,
+        `Cable validation: Device type '${device.device_type}' has no interfaces defined. Interface '${iface}' will not be validated.`,
       );
     }
-  }
+  };
 
-  // Check B-side interface exists on device type
-  if (bDevice) {
-    const bDeviceType = device_types.find(
-      (dt) => dt.slug === bDevice.device_type,
-    );
-    if (bDeviceType?.interfaces) {
-      const hasInterface = bDeviceType.interfaces.some(
-        (iface) => iface.name === cable.b_interface,
-      );
-      if (!hasInterface) {
-        errors.push(
-          `Interface '${cable.b_interface}' not found on device type '${bDevice.device_type}'`,
-        );
-      }
-    } else {
-      // Device type has no interfaces defined - allow any interface name
-      debug.warn(
-        `Cable validation: Device type '${bDevice.device_type}' has no interfaces defined. Interface '${cable.b_interface}' will not be validated.`,
-      );
-    }
-  }
+  validateInterface(aDevice, cable.a_interface, "A");
+  validateInterface(bDevice, cable.b_interface, "B");
 
-  // Check for duplicate cables (same A and B endpoints, in either direction)
-  const isDuplicate = cables.some((existing) => {
-    if (excludeCableId && existing.id === excludeCableId) return false;
-
-    // Check both directions: A->B and B->A
-    const matchesForward =
-      existing.a_device_id === cable.a_device_id &&
-      existing.a_interface === cable.a_interface &&
-      existing.b_device_id === cable.b_device_id &&
-      existing.b_interface === cable.b_interface;
-
-    const matchesReverse =
-      existing.a_device_id === cable.b_device_id &&
-      existing.a_interface === cable.b_interface &&
-      existing.b_device_id === cable.a_device_id &&
-      existing.b_interface === cable.a_interface;
-
-    return matchesForward || matchesReverse;
-  });
-
-  if (isDuplicate) {
-    errors.push("Cable already exists between these endpoints");
-  }
-
-  // Check that A and B aren't the same endpoint
-  if (
-    cable.a_device_id === cable.b_device_id &&
-    cable.a_interface === cable.b_interface
-  ) {
-    errors.push("Cable cannot connect an interface to itself");
+  // A cable must connect two different devices.
+  if (cable.a_device_id === cable.b_device_id) {
+    errors.push("A cable must connect two different devices");
   }
 
   return {

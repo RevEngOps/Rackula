@@ -19,6 +19,7 @@
   import RackIndicator from "$lib/components/mobile/RackIndicator.svelte";
   import SidebarTabs from "$lib/components/SidebarTabs.svelte";
   import RackList from "$lib/components/RackList.svelte";
+  import CablesPanel from "$lib/components/CablesPanel.svelte";
   import PersistenceEffects from "$lib/components/PersistenceEffects.svelte";
   import DialogOrchestrator from "$lib/components/DialogOrchestrator.svelte";
   import StartScreen, {
@@ -621,6 +622,8 @@
                 onrename={handleRackContextRename}
                 onduplicate={handleRackContextDuplicate}
               />
+            {:else if uiStore.sidebarTab === "cables"}
+              <CablesPanel />
             {/if}
           </Pane>
 

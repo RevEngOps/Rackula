@@ -17,7 +17,7 @@ import type { DisplayMode, AnnotationField } from "$lib/types";
 import { safeGetItem, safeSetItem } from "$lib/utils/safe-storage";
 
 // Sidebar tab type (hide removed - collapse is now gesture-based)
-export type SidebarTab = "devices" | "racks";
+export type SidebarTab = "devices" | "racks" | "cables";
 
 // localStorage keys
 const SIDEBAR_TAB_KEY = "Rackula_sidebar_tab";
@@ -28,7 +28,11 @@ const COMPATIBLE_ONLY_KEY = "Rackula-device-compatible-only";
 /**
  * Valid sidebar tab values for runtime validation
  */
-const VALID_SIDEBAR_TABS: readonly SidebarTab[] = ["devices", "racks"] as const;
+const VALID_SIDEBAR_TABS: readonly SidebarTab[] = [
+  "devices",
+  "racks",
+  "cables",
+] as const;
 
 /**
  * Check if a value is a valid SidebarTab
@@ -136,6 +140,8 @@ let displayMode = $state<DisplayMode>("label");
 let showAnnotations = $state(false);
 let annotationField = $state<AnnotationField>("name");
 let showBanana = $state(false);
+// Cable overlay lines on the canvas (on by default; toggleable from Cables tab)
+let showCables = $state(true);
 let sidebarWidth = $state<number | null>(initialSidebarWidth);
 let sidebarTab = $state<SidebarTab>(initialSidebarTab);
 let warnOnUnsavedChanges = $state(initialWarnUnsaved);
@@ -164,6 +170,7 @@ export function resetUIStore(): void {
   showAnnotations = false;
   annotationField = "name";
   showBanana = false;
+  showCables = true;
   sidebarWidth = loadSidebarWidthFromStorage();
   sidebarTab = loadSidebarTabFromStorage();
   warnOnUnsavedChanges = loadWarnUnsavedFromStorage();
@@ -225,6 +232,9 @@ export function getUIStore() {
     get showBanana() {
       return showBanana;
     },
+    get showCables() {
+      return showCables;
+    },
 
     // Sidebar state getters
     get sidebarWidth() {
@@ -269,6 +279,10 @@ export function getUIStore() {
     toggleAnnotations,
     setAnnotations,
     setAnnotationField,
+
+    // Cable overlay actions
+    toggleCables,
+    setCables,
 
     // Easter egg actions
     toggleBanana,
@@ -419,6 +433,21 @@ function toggleAnnotations(): void {
  */
 function setAnnotations(enabled: boolean): void {
   showAnnotations = enabled;
+}
+
+/**
+ * Toggle cable overlay lines on the canvas
+ */
+function toggleCables(): void {
+  showCables = !showCables;
+}
+
+/**
+ * Set cable overlay visibility explicitly
+ * @param enabled - Whether cable overlay lines should be visible
+ */
+function setCables(enabled: boolean): void {
+  showCables = enabled;
 }
 
 /**
