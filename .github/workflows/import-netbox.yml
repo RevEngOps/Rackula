@@ -8,7 +8,16 @@ on:
         required: true
         type: string
       slug:
-        description: 'Device slug to import (leave empty for all)'
+        description: 'Device slug to import (NetBox YAML filename; leave empty for all)'
+        required: false
+        type: string
+      write:
+        description: 'Write device definitions into the brand pack file (--write)'
+        required: false
+        type: boolean
+        default: true
+      category:
+        description: 'Force a category for all devices (leave empty to auto-detect)'
         required: false
         type: string
       dry_run:
@@ -48,6 +57,14 @@ jobs:
             FLAGS="$FLAGS --all"
           fi
 
+          if [ "${{ inputs.write }}" = "true" ]; then
+            FLAGS="$FLAGS --write"
+          fi
+
+          if [ -n "${{ inputs.category }}" ]; then
+            FLAGS="$FLAGS --category ${{ inputs.category }}"
+          fi
+
           if [ "${{ inputs.dry_run }}" = "true" ]; then
             FLAGS="$FLAGS --dry-run"
           fi
@@ -58,6 +75,10 @@ jobs:
       - name: Process images
         if: inputs.dry_run == false
         run: npm run process-images
+
+      - name: Generate bundled images manifest
+        if: inputs.dry_run == false
+        run: npm run generate-bundled-images
 
       - name: Check for changes
         if: inputs.dry_run == false
@@ -82,11 +103,13 @@ jobs:
 
             **Vendor:** ${{ inputs.vendor }}
             **Device:** ${{ inputs.slug || 'All available' }}
+            **Write to brand pack:** ${{ inputs.write }}
+            **Forced category:** ${{ inputs.category || 'auto-detect' }}
 
             ## Checklist
-            - [ ] Review imported device definitions
+            - [ ] Review imported device definitions (brand pack `.ts` + `index.ts`)
+            - [ ] Verify auto-detected categories are correct (re-run with `category` to override)
             - [ ] Verify images render correctly
-            - [ ] Update `bundledImages.ts` if needed
             - [ ] Run tests locally
 
             ---

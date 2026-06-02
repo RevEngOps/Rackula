@@ -7,8 +7,11 @@ This guide explains how to import devices from the [NetBox community devicetype-
 ### Complete Import Workflow
 
 ```bash
-# 1. Import devices (downloads YAML + images automatically)
-npx tsx scripts/import-netbox-devices.ts --vendor HPE --all
+# 1. Import devices AND write them into the brand pack file.
+#    --write merges the device definitions into src/lib/data/brandPacks/<vendor>.ts
+#    (creating + registering the file in index.ts if the vendor is new) and
+#    downloads images. Omit --write to only print the TypeScript for manual pasting.
+npx tsx scripts/import-netbox-devices.ts --vendor HPE --all --write
 
 # 2. Process images (convert to optimized WebP)
 npm run process-images
@@ -20,27 +23,74 @@ npm run generate-bundled-images
 npm run build
 ```
 
+> **Fully automated builds (CI / Docker):** the four commands above are all you
+> need — with `--write`, no manual editing of brand pack files or
+> `bundledImages.ts` is required. Run the import once per vendor (each `--write`
+> run targets a single `--vendor`). See [Automatic vs. Manual Import](#automatic-vs-manual-import).
+
 ### Using the Import Script
 
 ```bash
 # List available devices from a vendor
 npx tsx scripts/import-netbox-devices.ts --vendor Ubiquiti --list
 
-# Import a specific device
-npx tsx scripts/import-netbox-devices.ts --vendor Ubiquiti --slug ubiquiti-usw-pro-24
+# Import a specific device and write it into the brand pack
+npx tsx scripts/import-netbox-devices.ts --vendor Ubiquiti --slug USW-Pro-24 --write
 
 # Import all devices from a vendor (dry run first!)
-npx tsx scripts/import-netbox-devices.ts --vendor Dell --all --dry-run
-npx tsx scripts/import-netbox-devices.ts --vendor Dell --all
+npx tsx scripts/import-netbox-devices.ts --vendor Dell --all --write --dry-run
+npx tsx scripts/import-netbox-devices.ts --vendor Dell --all --write
+
+# Force a category for the whole import (overrides auto-detection)
+npx tsx scripts/import-netbox-devices.ts --vendor Eaton --all --write --category power
 ```
+
+**Key flags:**
+
+| Flag               | Effect                                                                                                  |
+| ------------------ | ------------------------------------------------------------------------------------------------------- |
+| `--write`          | Merge devices into `src/lib/data/brandPacks/<vendor>.ts` (create + register in `index.ts` if new).      |
+| `--category <cat>` | Force the category for every imported device, overriding auto-detection (see [Category Mapping](#category-mapping)). |
+| `--dry-run`        | Preview what would be imported/written without making changes.                                          |
+| `--images-only`    | Only download images; skip TypeScript updates.                                                          |
+
+> Without `--write` the script only **prints** the generated TypeScript for you
+> to paste manually (the original behaviour).
+
+> **Note on `--slug`:** the value is the NetBox YAML **filename** (e.g.
+> `USW-Pro-24`), not the lowercase Rackula device slug.
 
 ### Using GitHub Actions
 
 1. Go to **Actions** → **Import NetBox Devices**
 2. Click **Run workflow**
-3. Enter the vendor name and optionally a specific slug
-4. Enable **Dry run** to preview changes first
-5. The action creates a PR with the imported devices
+3. Enter the vendor name and optionally a specific slug (NetBox YAML filename)
+4. Leave **write** enabled to write device definitions into the brand pack
+   (disable it to only print/download). Optionally set **category** to force a
+   category instead of auto-detecting.
+5. Enable **Dry run** to preview changes first
+6. The action imports devices, processes images, regenerates `bundledImages.ts`,
+   and opens a PR with the result
+
+## Automatic vs. Manual Import
+
+With `--write`, the import script writes device definitions directly into the
+brand pack source, so the **automatic** path needs no hand-editing:
+
+- **Existing vendor** (e.g. `eaton.ts` already exists): new devices are merged
+  into the exported array, de-duped by `slug`, so re-runs are idempotent and
+  your curated entries are preserved.
+- **New vendor** (no brand pack file yet): a `src/lib/data/brandPacks/<vendor>.ts`
+  is created and registered in `index.ts` (import, re-export, `getBrandPacks()`,
+  `getBrandDevices()`, and `getAllBrandDevices()`).
+
+Generated code matches the repo's formatting (2-space indent, double quotes) and
+preserves the target file's existing line endings.
+
+The **manual** process below is only needed if you prefer to hand-curate entries
+(or run the script without `--write`). Note that only **rack-mountable** devices
+(`u_height >= 1`) are imported; 0U devices such as access points and vertical
+PDUs are skipped.
 
 ## Manual Import Process
 
@@ -188,6 +238,10 @@ By vendor:
 
 ### Step 7: Add to Brand Pack
 
+> **Tip:** running the import with `--write` does this step for you (merging into
+> the existing file or creating + registering a new one). The manual steps below
+> apply only when running without `--write`.
+
 Add device to the appropriate brand pack file in `src/lib/data/brandPacks/`:
 
 ```typescript
@@ -210,19 +264,43 @@ export const ubiquitiDevices: DeviceType[] = [
 
 ## Category Mapping
 
-Infer category from device type:
+When `--category` is **not** given, the script infers a category from the
+manufacturer + model + slug using an ordered keyword match (first match wins):
 
-| Device Type                       | Rackula Category |
-| --------------------------------- | ---------------- |
-| Switch, Router, Gateway, Firewall | `network`        |
-| PowerEdge, ProLiant, Server       | `server`         |
-| NAS, RS*, DS*                     | `storage`        |
-| UPS                               | `power`          |
-| PDU                               | `power`          |
-| NVR                               | `server`         |
-| Patch Panel                       | `patch-panel`    |
-| KVM, Console                      | `kvm`            |
-| Unknown                           | `other`          |
+| Keywords (in name/slug)                                  | Rackula Category  |
+| -------------------------------------------------------- | ----------------- |
+| firewall, fortigate, palo, pfsense, sonicwall, utm       | `firewall`        |
+| kvm, console server, serial console, ipmi                | `kvm`             |
+| switch, router, gateway, access point, wireless, sfp, poe | `network`        |
+| ups, pdu, ats, surge, isobar, ebm, battery, inverter, psu | `power`          |
+| nas, san, jbod, storage, diskstation, rackstation, nvr   | `storage`         |
+| hdmi, sdi, atem, decklink, capture, encoder, decoder     | `av-media`        |
+| fan, cooling, thermal, crac, crah                        | `cooling`         |
+| patch panel, keystone, patch                             | `patch-panel`     |
+| cable manage, lacing, wire duct, brush panel             | `cable-management`|
+| shelf, tray, plenum                                      | `shelf`           |
+| chassis, enclosure, bladecenter                          | `chassis`         |
+| server, poweredge, proliant, node, blade, workstation    | `server`          |
+| _no match_                                               | `other`           |
+
+Heuristics are imperfect for mixed-catalog vendors. **For a guaranteed result,
+pin the category** for the whole import:
+
+```bash
+# Every imported device is written as category: 'power'
+npx tsx scripts/import-netbox-devices.ts --vendor Eaton --all --write --category power
+```
+
+> **`--category` also re-categorises existing devices.** Because the import
+> de-dupes by slug, a device that was already written (e.g. as `other` by an
+> earlier run without `--category`) is normally skipped. When you pass
+> `--category`, the script additionally rewrites the `category` (and colour) of
+> those already-present devices, so re-running with `--category power` fixes the
+> whole pack. Use `--dry-run` to preview how many entries would change.
+
+`--category` accepts: `server`, `network`, `firewall`, `patch-panel`, `power`,
+`storage`, `kvm`, `av-media`, `cooling`, `shelf`, `blank`, `cable-management`,
+`chassis`, `other`.
 
 ## Quality Checklist
 

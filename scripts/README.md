@@ -20,7 +20,7 @@ Utility scripts for build, maintenance, data import, and performance tasks.
 
 ## Data Import (NetBox)
 
-Three scripts for importing device definitions from the [NetBox devicetype-library](https://github.com/netbox-community/devicetype-library):
+Scripts for importing device definitions from the [NetBox devicetype-library](https://github.com/netbox-community/devicetype-library):
 
 | Script                                  | Purpose                                                   | Scope                            |
 | --------------------------------------- | --------------------------------------------------------- | -------------------------------- |
@@ -28,6 +28,48 @@ Three scripts for importing device definitions from the [NetBox devicetype-libra
 | `curated-import.ts`                     | Curated import of popular models                          | ~420 devices from select vendors |
 | `bulk-import-netbox.ts`                 | Bulk import across multiple vendors                       | Multiple vendors, configurable   |
 | `generate-netbox-homelab-candidates.ts` | Ranked net-new homelab candidates from local NetBox clone | Homelab-focused ranking          |
+
+### `import-netbox-devices.ts` flags
+
+| Flag               | Purpose                                                                                              |
+| ------------------ | ---------------------------------------------------------------------------------------------------- |
+| `--vendor <name>`  | Vendor folder name in NetBox (case-sensitive). **Required** (except `--list-vendors`).               |
+| `--all`            | Import every device for the vendor.                                                                  |
+| `--slug <name>`    | Import a single device by its NetBox YAML filename (e.g. `USW-Pro-24`).                               |
+| `--write`          | Write definitions into `src/lib/data/brandPacks/<vendor>.ts`, creating + registering it in `index.ts` if new. Idempotent (de-dupes by slug). Without it, the generated TypeScript is only printed. |
+| `--category <cat>` | Force a category for every device in the import, overriding auto-detection. Also **re-categorises devices already present** in the brand pack (so it fixes entries a previous no-`--category` run wrote as `other`). See values below. |
+| `--list`           | List a vendor's available devices without importing.                                                 |
+| `--list-vendors`   | List all available vendors.                                                                          |
+| `--dry-run`        | Preview without writing or downloading.                                                              |
+| `--images-only`    | Only download images; skip TypeScript updates.                                                       |
+
+**Valid `--category` values** (must match the `DeviceCategory` union in [`src/lib/types/index.ts`](../src/lib/types/index.ts)):
+
+| Category           | Typical devices                                          |
+| ------------------ | -------------------------------------------------------- |
+| `server`           | Servers, blades, compute nodes, workstations             |
+| `network`          | Switches, routers, gateways, access points               |
+| `firewall`         | Firewalls / security appliances                          |
+| `patch-panel`      | Patch panels, keystone panels                            |
+| `power`            | UPS, PDU, ATS, surge, battery modules                    |
+| `storage`          | NAS, SAN, JBOD, disk shelves, NVR/DVR                    |
+| `kvm`              | KVM, console / serial servers, IPMI                      |
+| `av-media`         | Video matrices, capture, encoders/decoders               |
+| `cooling`          | Fans, cooling/thermal units                              |
+| `shelf`            | Rack shelves, trays                                      |
+| `blank`            | Blanking panels                                          |
+| `cable-management` | Cable managers, wire ducts, brush panels                 |
+| `chassis`          | Blade/server chassis, enclosures                         |
+| `other`            | Neutral fallback when nothing else fits                  |
+
+```bash
+# Fully automated, idempotent import for CI/Docker (one vendor per run):
+npx tsx scripts/import-netbox-devices.ts --vendor Eaton --all --write --category power
+npm run process-images
+npm run generate-bundled-images
+```
+
+See [docs/guides/NETBOX-IMPORT.md](../docs/guides/NETBOX-IMPORT.md) for the full guide.
 
 ## Image Processing
 

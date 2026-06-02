@@ -19,9 +19,14 @@
  *   --list-vendors    List all available vendors
  *   --dry-run         Show what would be imported without making changes
  *   --images-only     Only download images, don't update TypeScript files
+ *   --write           Write device definitions into the brand pack file
+ *                     (src/lib/data/brandPacks/<vendor>.ts), creating and
+ *                     registering it in index.ts if it does not yet exist.
+ *                     Without this flag the script only prints the generated
+ *                     TypeScript for manual pasting (legacy behaviour).
  */
 
-import { writeFile, mkdir } from "fs/promises";
+import { writeFile, readFile, mkdir } from "fs/promises";
 import { existsSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
@@ -63,6 +68,8 @@ interface ImportOptions {
   listVendors?: boolean;
   dryRun?: boolean;
   imagesOnly?: boolean;
+  write?: boolean;
+  category?: string;
 }
 
 function parseArgs(): ImportOptions {
@@ -92,6 +99,12 @@ function parseArgs(): ImportOptions {
       case "--images-only":
         options.imagesOnly = true;
         break;
+      case "--write":
+        options.write = true;
+        break;
+      case "--category":
+        options.category = args[++i];
+        break;
       case "--help":
         printHelp();
         process.exit(0);
@@ -116,6 +129,13 @@ Options:
   --list-vendors    List all available vendors
   --dry-run         Show what would be imported without changes
   --images-only     Only download images, skip TypeScript updates
+  --write           Write device definitions into the brand pack .ts file
+                    (and register a new vendor in index.ts). Without it the
+                    generated TypeScript is only printed for manual pasting.
+  --category <cat>  Force a category for every imported device, overriding
+                    auto-detection. One of: server, network, firewall,
+                    patch-panel, power, storage, kvm, av-media, cooling,
+                    shelf, blank, cable-management, chassis, other.
   --help            Show this help message
 
 Examples:
@@ -127,6 +147,9 @@ Examples:
 
   # Import all Dell PowerEdge servers
   npx tsx scripts/import-netbox-devices.ts --vendor Dell --all
+
+  # Import all Eaton devices AND write them into the brand pack (CI/Docker)
+  npx tsx scripts/import-netbox-devices.ts --vendor Eaton --all --write
 
   # List all available vendors
   npx tsx scripts/import-netbox-devices.ts --list-vendors
@@ -226,31 +249,117 @@ function slugToVarName(slug: string): string {
     .join("");
 }
 
-function inferCategory(device: NetBoxDevice): string {
-  const model = device.model.toLowerCase();
-  const slug = device.slug.toLowerCase();
+// Valid device categories — keep in sync with the DeviceCategory union in
+// src/lib/types/index.ts. Used to validate --category and as the keyword map.
+const DEVICE_CATEGORIES = [
+  "server",
+  "network",
+  "firewall",
+  "patch-panel",
+  "power",
+  "storage",
+  "kvm",
+  "av-media",
+  "cooling",
+  "shelf",
+  "blank",
+  "cable-management",
+  "chassis",
+  "other",
+] as const;
+type DeviceCategory = (typeof DEVICE_CATEGORIES)[number];
 
-  // Check common patterns
-  if (model.includes("switch") || slug.includes("switch")) return "network";
-  if (model.includes("router") || slug.includes("router")) return "network";
-  if (model.includes("gateway") || slug.includes("gateway")) return "network";
-  if (model.includes("firewall")) return "network";
-  if (model.includes("ups") || slug.includes("ups")) return "power";
-  if (model.includes("pdu") || slug.includes("pdu")) return "power";
-  if (model.includes("nas") || model.includes("rs") || model.includes("ds"))
-    return "storage";
-  if (model.includes("poweredge") || model.includes("proliant"))
-    return "server";
-  if (model.includes("nvr") || slug.includes("nvr")) return "server";
-  if (model.includes("patch")) return "patch-panel";
+// Ordered keyword rules: first matching category wins. More specific
+// categories (firewall, kvm) come before broader ones (network) so a
+// "firewall" isn't swallowed by a generic "network" rule. Keywords are
+// matched against manufacturer + model + slug, lowercased.
+const CATEGORY_KEYWORDS: ReadonlyArray<readonly [DeviceCategory, RegExp]> = [
+  ["firewall", /firewall|fortigate|\bpalo\b|pfsense|\bfw\b|sonicwall|\butm\b/],
+  ["kvm", /\bkvm\b|console server|serial console|\bipmi\b|\bkmm\b/],
+  [
+    "network",
+    /switch|router|gateway|\brouterboard\b|access point|\bap\b|wireless|firebox|\bsfp\b|\bpoe\b|patch.*switch|ethernet|network/,
+  ],
+  ["power", /\bups\b|\bpdu\b|\bats\b|power distribution|surge|isobar|\bebm\b|battery|inverter|rectifier|\brpp\b|\bpsu\b|power supply/],
+  ["storage", /\bnas\b|\bsan\b|\bjbod\b|storage|disk shelf|disk array|diskstation|rackstation|\bnvr\b|\bdvr\b/],
+  ["av-media", /hdmi|\bsdi\b|\batem\b|decklink|capture|video matrix|\bkvm matrix\b|av over ip|encoder|decoder/],
+  ["cooling", /\bfan\b|cooling|thermal|\bcrac\b|\bcrah\b|air condition/],
+  ["patch-panel", /patch panel|patch-panel|keystone|\bpatch\b/],
+  ["cable-management", /cable manage|cable-manage|lacing|wire duct|\bduct\b|finger duct|brush panel/],
+  ["shelf", /\bshelf\b|\btray\b|rack tray|\bplenum\b/],
+  ["chassis", /chassis|enclosure|blade center|bladecenter|\bjbof\b/],
+  ["server", /server|poweredge|proliant|\bnode\b|\bblade\b|workstation|compute/],
+];
 
-  // Default to server for unknown rack devices
-  return "server";
+function inferCategory(device: NetBoxDevice): DeviceCategory {
+  const haystack =
+    `${device.manufacturer ?? ""} ${device.model} ${device.slug}`.toLowerCase();
+
+  for (const [category, pattern] of CATEGORY_KEYWORDS) {
+    if (pattern.test(haystack)) return category;
+  }
+
+  // Neutral fallback — "other" (grey) is more honest than guessing "server".
+  return "other";
 }
 
-function deviceToTypeScript(device: NetBoxDevice): string {
-  const category = inferCategory(device);
-  const categoryColour = `CATEGORY_COLOURS.${category.replace("-", "_")}`;
+/** Category to use for a device: explicit --category override, else inferred. */
+function resolveCategory(
+  device: NetBoxDevice,
+  override?: string,
+): DeviceCategory {
+  return (override as DeviceCategory) ?? inferCategory(device);
+}
+
+/** CATEGORY_COLOURS access expression, bracket form for hyphenated keys. */
+function categoryColourExpr(category: string): string {
+  return /^[a-z][a-z0-9]*$/.test(category)
+    ? `CATEGORY_COLOURS.${category}`
+    : `CATEGORY_COLOURS[${JSON.stringify(category)}]`;
+}
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Force `category` (and its matching colour) on the existing device blocks for
+ * the given slugs. Device object literals are flat (no nested braces), so each
+ * is matched as `{ ... }` containing the target slug. Returns the updated
+ * content and the number of device blocks actually changed.
+ */
+function applyCategoryToExisting(
+  content: string,
+  slugs: string[],
+  category: string,
+): { content: string; changed: number } {
+  const colour = categoryColourExpr(category);
+  let changed = 0;
+
+  for (const slug of slugs) {
+    const blockRe = new RegExp(
+      `\\{[^{}]*?slug:\\s*["']${escapeRegExp(slug)}["'][^{}]*?\\}`,
+    );
+    content = content.replace(blockRe, (block) => {
+      let updated = block.replace(
+        /category:\s*["'][^"']*["']/,
+        `category: "${category}"`,
+      );
+      updated = updated.replace(/colour:\s*[^,\n]+/, `colour: ${colour}`);
+      if (updated !== block) changed++;
+      return updated;
+    });
+  }
+
+  return { content, changed };
+}
+
+function deviceToTypeScript(
+  device: NetBoxDevice,
+  categoryOverride?: string,
+): string {
+  const category = resolveCategory(device, categoryOverride);
+  const categoryColour = categoryColourExpr(category);
 
   const lines = [
     "\t{",
@@ -281,6 +390,301 @@ function deviceToTypeScript(device: NetBoxDevice): string {
 
   lines.push("\t}");
   return lines.join("\n");
+}
+
+// --- Self-writing helpers (used by --write) -------------------------------
+//
+// These generate prettier-style source (2-space indent, double quotes) so the
+// edited brand pack files stay consistent with the rest of src/ and pass the
+// build without a follow-up `npm run format`.
+
+const BRAND_PACKS_DIR = join(ROOT_DIR, "src", "lib", "data", "brandPacks");
+
+/** "Eaton" -> "eaton", "TP-Link" -> "tp-link", "Palo Alto" -> "palo-alto" */
+function vendorToFileSlug(vendor: string): string {
+  return vendor
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+/** "Eaton" -> "eatonDevices", "TP-Link" -> "tplinkDevices" */
+function vendorToVarName(vendor: string): string {
+  return vendor.toLowerCase().replace(/[^a-z0-9]+/g, "") + "Devices";
+}
+
+/** Render a single device as a prettier-style object literal (2-space indent). */
+function deviceToObjectLiteral(
+  device: NetBoxDevice,
+  categoryOverride?: string,
+): string {
+  const category = resolveCategory(device, categoryOverride);
+  const colourExpr = categoryColourExpr(category);
+
+  const lines: string[] = ["  {"];
+  lines.push(`    slug: ${JSON.stringify(device.slug)},`);
+  lines.push(`    u_height: ${device.u_height},`);
+  lines.push(`    manufacturer: ${JSON.stringify(device.manufacturer)},`);
+  lines.push(`    model: ${JSON.stringify(device.model)},`);
+  if (device.is_full_depth !== undefined) {
+    lines.push(`    is_full_depth: ${device.is_full_depth},`);
+  }
+  if (device.airflow) {
+    lines.push(`    airflow: ${JSON.stringify(device.airflow)},`);
+  }
+  lines.push(`    colour: ${colourExpr},`);
+  lines.push(`    category: ${JSON.stringify(category)},`);
+  if (device.front_image) {
+    lines.push(`    front_image: true,`);
+  }
+  if (device.rear_image) {
+    lines.push(`    rear_image: true,`);
+  }
+  lines.push("  },");
+  return lines.join("\n");
+}
+
+/** Build a brand pack file from scratch for a brand-new vendor. */
+function newBrandPackContent(
+  vendor: string,
+  varName: string,
+  devices: NetBoxDevice[],
+  categoryOverride?: string,
+): string {
+  const body = devices
+    .map((d) => deviceToObjectLiteral(d, categoryOverride))
+    .join("\n");
+  return (
+    `/**\n` +
+    ` * ${vendor} Brand Pack\n` +
+    ` * Pre-defined device types for ${vendor} rack-mountable devices\n` +
+    ` * Source: NetBox community devicetype-library\n` +
+    ` */\n\n` +
+    `import type { DeviceType } from "$lib/types";\n` +
+    `import { CATEGORY_COLOURS } from "$lib/types/constants";\n\n` +
+    `export const ${varName}: DeviceType[] = [\n${body}\n];\n`
+  );
+}
+
+/**
+ * Register a newly created brand pack in brandPacks/index.ts.
+ * All-or-nothing: if any anchor is missing the file is left untouched and the
+ * caller is told to wire it up manually. Returns true on success.
+ */
+async function registerInIndex(
+  vendor: string,
+  varName: string,
+  fileSlug: string,
+): Promise<boolean> {
+  const indexPath = join(BRAND_PACKS_DIR, "index.ts");
+  let content = await readFile(indexPath, "utf-8");
+
+  if (content.includes(`from "./${fileSlug}"`)) {
+    return true; // already registered
+  }
+
+  const title = vendor;
+  const sectionId = fileSlug;
+  // Preserve the file's existing EOL style (the repo ships CRLF files); every
+  // regex below uses \r?\n so it matches regardless.
+  const eol = content.includes("\r\n") ? "\r\n" : "\n";
+  const lines = (...parts: string[]): string => parts.join(eol);
+
+  // 1. import statement — after the last brand `*Devices` import
+  const importRe = /import \{ \w+Devices \} from "\.\/[^"]+";/g;
+  const importMatches = [...content.matchAll(importRe)];
+  if (importMatches.length === 0) return false;
+  const lastImport = importMatches[importMatches.length - 1];
+  const importInsertAt = lastImport.index! + lastImport[0].length;
+  content =
+    content.slice(0, importInsertAt) +
+    `${eol}import { ${varName} } from "./${fileSlug}";` +
+    content.slice(importInsertAt);
+
+  // 2. re-export — before the closing `};` of the first `export { ... };` block
+  const exportBlockRe = /export \{\r?\n([\s\S]*?)\r?\n\};/;
+  if (!exportBlockRe.test(content)) return false;
+  content = content.replace(
+    exportBlockRe,
+    (_m, inner) => lines("export {", inner, `  ${varName},`, "};"),
+  );
+
+  // 3. getBrandPacks() — append a section before that function's closing `];`
+  const sectionLiteral = lines(
+    "    {",
+    `      id: ${JSON.stringify(sectionId)},`,
+    `      title: ${JSON.stringify(title)},`,
+    `      devices: ${varName},`,
+    `      defaultExpanded: false,`,
+    "    },",
+  );
+  const getBrandPacksRe =
+    /(export function getBrandPacks\(\): BrandSection\[\] \{[\s\S]*?return \[\r?\n)([\s\S]*?)(\r?\n  \];)/;
+  if (!getBrandPacksRe.test(content)) return false;
+  content = content.replace(
+    getBrandPacksRe,
+    (_m, head, body, tail) => `${head}${body}${eol}${sectionLiteral}${tail}`,
+  );
+
+  // 4. getBrandDevices() — add a case before `default:`
+  const getBrandDevicesRe =
+    /(export function getBrandDevices\(brandId: string\): DeviceType\[\] \{[\s\S]*?)(\r?\n    default:)/;
+  if (!getBrandDevicesRe.test(content)) return false;
+  content = content.replace(
+    getBrandDevicesRe,
+    (_m, head, def) =>
+      head +
+      lines("", `    case ${JSON.stringify(sectionId)}:`, `      return ${varName};`) +
+      def,
+  );
+
+  // 5. getAllBrandDevices() — add a spread before that function's closing `];`
+  const getAllRe =
+    /(export function getAllBrandDevices\(\): DeviceType\[\] \{[\s\S]*?return \[\r?\n)([\s\S]*?)(\r?\n  \];)/;
+  if (!getAllRe.test(content)) return false;
+  content = content.replace(
+    getAllRe,
+    (_m, head, body, tail) => `${head}${body}${eol}    ...${varName},${tail}`,
+  );
+
+  await writeFile(indexPath, content, "utf-8");
+  return true;
+}
+
+/**
+ * Write the imported devices into their brand pack file.
+ * - Existing file: merge new devices (by slug) into the exported array.
+ * - Missing file: create it and register it in index.ts.
+ * Returns the number of devices newly added.
+ */
+async function writeBrandPack(
+  vendor: string,
+  devices: NetBoxDevice[],
+  dryRun: boolean,
+  categoryOverride?: string,
+): Promise<number> {
+  const fileSlug = vendorToFileSlug(vendor);
+  const varName = vendorToVarName(vendor);
+  const filePath = join(BRAND_PACKS_DIR, `${fileSlug}.ts`);
+  const relPath = `src/lib/data/brandPacks/${fileSlug}.ts`;
+
+  if (existsSync(filePath)) {
+    let content = await readFile(filePath, "utf-8");
+
+    const existingSlugs = new Set(
+      [...content.matchAll(/slug:\s*["']([^"']+)["']/g)].map((m) => m[1]),
+    );
+    const newDevices = devices.filter((d) => !existingSlugs.has(d.slug));
+    // With --category, also re-categorise devices that already exist (the
+    // de-dup would otherwise leave their original category untouched).
+    const presentSlugs = categoryOverride
+      ? devices.filter((d) => existingSlugs.has(d.slug)).map((d) => d.slug)
+      : [];
+
+    if (newDevices.length === 0 && presentSlugs.length === 0) {
+      console.log(
+        `\n✅ ${relPath}: all ${devices.length} device(s) already present, nothing to add`,
+      );
+      return 0;
+    }
+
+    if (dryRun) {
+      if (newDevices.length > 0) {
+        console.log(
+          `\n[DRY RUN] Would add ${newDevices.length} device(s) to ${relPath}:`,
+        );
+        newDevices.forEach((d) => console.log(`  + ${d.slug}`));
+      }
+      if (presentSlugs.length > 0 && categoryOverride) {
+        const { changed } = applyCategoryToExisting(
+          content,
+          presentSlugs,
+          categoryOverride,
+        );
+        if (changed > 0) {
+          console.log(
+            `[DRY RUN] Would set category="${categoryOverride}" on ${changed} existing device(s).`,
+          );
+        }
+      }
+      return newDevices.length;
+    }
+
+    // Preserve the file's existing EOL style in the inserted lines.
+    const eol = content.includes("\r\n") ? "\r\n" : "\n";
+
+    // 1. Re-categorise already-present devices (only when --category is set).
+    let recategorised = 0;
+    if (presentSlugs.length > 0 && categoryOverride) {
+      const result = applyCategoryToExisting(
+        content,
+        presentSlugs,
+        categoryOverride,
+      );
+      content = result.content;
+      recategorised = result.changed;
+    }
+
+    // 2. Append the genuinely new devices to the array.
+    if (newDevices.length > 0) {
+      // Tolerant of both LF and CRLF line endings (the repo ships CRLF files).
+      const arrayRe =
+        /(export const \w+: DeviceType\[\] = \[)([\s\S]*?)(\r?\n\];)/;
+      if (!arrayRe.test(content)) {
+        throw new Error(
+          `Could not locate the device array in ${relPath} (expected "export const <name>: DeviceType[] = [ ... ];").`,
+        );
+      }
+      const block = newDevices
+        .map((d) => deviceToObjectLiteral(d, categoryOverride))
+        .join("\n")
+        .replace(/\n/g, eol);
+      content = content.replace(
+        arrayRe,
+        (_m, open, body, close) =>
+          `${open}${body.replace(/\s+$/, "")}${eol}${block}${close}`,
+      );
+    }
+
+    await writeFile(filePath, content, "utf-8");
+    if (newDevices.length > 0) {
+      console.log(`\n✅ Added ${newDevices.length} device(s) to ${relPath}`);
+      newDevices.forEach((d) => console.log(`  + ${d.slug}`));
+    }
+    if (recategorised > 0) {
+      console.log(
+        `✅ Set category="${categoryOverride}" on ${recategorised} existing device(s) in ${relPath}`,
+      );
+    }
+    return newDevices.length;
+  }
+
+  // New vendor — create file + register it.
+  if (dryRun) {
+    console.log(
+      `\n[DRY RUN] Would create ${relPath} with ${devices.length} device(s) and register it in index.ts`,
+    );
+    return devices.length;
+  }
+
+  await writeFile(
+    filePath,
+    newBrandPackContent(vendor, varName, devices, categoryOverride),
+    "utf-8",
+  );
+  console.log(`\n✅ Created ${relPath} with ${devices.length} device(s)`);
+
+  const registered = await registerInIndex(vendor, varName, fileSlug);
+  if (registered) {
+    console.log(`✅ Registered ${varName} in brandPacks/index.ts`);
+  } else {
+    console.warn(
+      `\n⚠️  Could not auto-register the new pack in index.ts. Add manually:\n` +
+        `   import { ${varName} } from "./${fileSlug}";\n` +
+        `   …add ${varName} to the export block, getBrandPacks(), getBrandDevices() and getAllBrandDevices().`,
+    );
+  }
+  return devices.length;
 }
 
 async function importDevice(
@@ -387,6 +791,16 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  if (
+    options.category &&
+    !DEVICE_CATEGORIES.includes(options.category as DeviceCategory)
+  ) {
+    console.error(
+      `Error: invalid --category "${options.category}". Valid values: ${DEVICE_CATEGORIES.join(", ")}`,
+    );
+    process.exit(1);
+  }
+
   console.log(`\n🔌 NetBox Device Import`);
   console.log(`========================`);
   console.log(`Vendor: ${options.vendor}`);
@@ -425,6 +839,29 @@ async function main(): Promise<void> {
   console.log(`\n========================`);
   console.log(`Imported ${importedDevices.length} rack-mountable device(s)`);
 
+  // --write: persist the device definitions into the brand pack source file
+  // so a CI / Docker build picks them up. process-images +
+  // generate-bundled-images (run separately) handle the image manifest.
+  if (options.write && !options.imagesOnly) {
+    if (importedDevices.length === 0) {
+      console.log(`\nNo rack-mountable devices to write.`);
+    } else {
+      await writeBrandPack(
+        options.vendor,
+        importedDevices,
+        options.dryRun ?? false,
+        options.category,
+      );
+      if (!options.dryRun) {
+        console.log(`\n📋 Next steps (usually scripted in CI/Docker):`);
+        console.log(`1. Run: npm run process-images`);
+        console.log(`2. Run: npm run generate-bundled-images`);
+        console.log(`3. Run: npm run build`);
+      }
+    }
+    return;
+  }
+
   if (importedDevices.length > 0 && !options.dryRun && !options.imagesOnly) {
     // Generate TypeScript for imported devices
     console.log(`\n📝 Generated TypeScript:`);
@@ -436,7 +873,7 @@ async function main(): Promise<void> {
     );
     importedDevices.forEach((device, i) => {
       console.log(
-        deviceToTypeScript(device) +
+        deviceToTypeScript(device, options.category) +
           (i < importedDevices.length - 1 ? "," : ""),
       );
     });
