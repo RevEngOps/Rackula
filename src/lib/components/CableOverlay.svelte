@@ -77,8 +77,15 @@
     // Wait for any pending DOM updates before measuring.
     await tick();
     const containerRect = container.getBoundingClientRect();
-    // canvasStore.zoom is a scale factor (1 = 100%).
-    const scale = canvasStore.zoom || 1;
+    // Derive the live scale straight from the DOM: the container's on-screen
+    // (transformed) width divided by its layout (untransformed) width. This is
+    // exactly consistent with the rects we measure below, whereas trusting the
+    // store's zoom value can be slightly off — and that error is multiplied by
+    // a device's distance from the content origin, so lines for devices far
+    // from origin (2nd/3rd rack) drift away on zoom.
+    const layoutWidth = (container as HTMLElement).offsetWidth;
+    const scale =
+      layoutWidth > 0 ? containerRect.width / layoutWidth : canvasStore.zoom || 1;
 
     // 1. Collect renderable cables with canonical (id-sorted) endpoints so every
     //    cable on the same device pair shares one orientation for fanning out.
