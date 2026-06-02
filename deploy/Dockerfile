@@ -67,7 +67,10 @@ COPY ./deploy/nginx.conf.template /etc/nginx/templates/default.conf.template
 COPY ./deploy/security-headers.conf /etc/nginx/snippets/security-headers.conf
 # Shared auth endpoint proxy settings
 COPY ./deploy/nginx-auth-proxy.conf /etc/nginx/snippets/auth-proxy.conf
-COPY --chmod=755 ./deploy/docker-entrypoint-wrapper.sh /usr/local/bin/docker-entrypoint-wrapper.sh
+USER root
+COPY ./deploy/docker-entrypoint-wrapper.sh /usr/local/bin/docker-entrypoint-wrapper.sh
+RUN chmod 755 /usr/local/bin/docker-entrypoint-wrapper.sh
+USER nginx
 COPY --from=build /app/dist /usr/share/nginx/html
 
 # Health check tracks runtime listen port; busybox wget is present in base image.

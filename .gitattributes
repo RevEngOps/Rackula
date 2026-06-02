@@ -1,0 +1,5 @@
+# Shell scripts must always be checked out with LF line endings.
+# On Windows (core.autocrlf=true) CRLF would otherwise be written into the
+# script, breaking the shebang inside Linux containers
+# (e.g. the Docker entrypoint wrapper -> "no such file or directory").
+*.sh text eol=lf
