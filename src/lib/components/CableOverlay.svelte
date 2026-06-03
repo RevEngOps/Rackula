@@ -334,6 +334,8 @@
       side: "left" | "right";
       attachX: number;
       attachY: number;
+      trackMin: number;
+      trackMax: number;
       baseX: number;
     };
     const placed: Placed[] = [];
@@ -345,6 +347,8 @@
       const y1 = p1.y;
       const y2 = p2.y;
       const midY = (y1 + y2) / 2;
+      const trackMin = Math.min(y1, y2);
+      const trackMax = Math.max(y1, y2);
       // Outermost endpoint x — brackets stick out beyond this on the fan side.
       const baseX = side === "right" ? Math.max(p1.x, p2.x) : Math.min(p1.x, p2.x);
 
@@ -358,8 +362,10 @@
 
         placed.push({
           side,
-          attachX: laneX, // leader attaches at the middle of the vertical track
+          attachX: laneX,
           attachY: midY,
+          trackMin,
+          trackMax,
           baseX,
           seg: {
             id: it.id,
@@ -410,9 +416,14 @@
         lastY = y;
         p.seg.labelX = columnX;
         p.seg.labelY = y;
+        // Attach the leader to the point on this cable's own track nearest the
+        // label's height (clamped to the track). With the labels sorted by
+        // position, this keeps leaders short, near-horizontal and ordered, so
+        // they don't cross each other.
+        const ay = Math.max(p.trackMin, Math.min(p.trackMax, y));
         p.seg.leader = {
           x1: p.attachX,
-          y1: p.attachY,
+          y1: ay,
           x2: columnX - dirX * 4,
           y2: y,
         };
@@ -533,6 +544,20 @@
             class="cable-label"
             class:selected={isSelected}
             opacity={dimmed ? 0.3 : 1}
+            role="button"
+            onmouseenter={(e) => {
+              hoveredId = seg.id;
+              showCableTooltip(seg.info, e.clientX, e.clientY);
+            }}
+            onmousemove={(e) => moveCableTooltip(e.clientX, e.clientY)}
+            onmouseleave={() => {
+              if (hoveredId === seg.id) hoveredId = null;
+              hideCableTooltip();
+            }}
+            onclick={(e) => {
+              e.stopPropagation();
+              selectedCableId = selectedCableId === seg.id ? null : seg.id;
+            }}
           >{seg.labelText}</text>
         {/if}
       </g>
@@ -572,6 +597,8 @@
   }
 
   .cable-label {
+    pointer-events: all;
+    cursor: pointer;
     font-size: 10px;
     fill: var(--colour-text, #111);
     paint-order: stroke;
