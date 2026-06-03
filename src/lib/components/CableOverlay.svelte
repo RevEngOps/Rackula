@@ -51,6 +51,25 @@
   >([]);
   // Id of the cable currently hovered (for visual emphasis).
   let hoveredId = $state<string | null>(null);
+  // Id of the cable pinned by a click (stays highlighted until cleared).
+  let selectedCableId = $state<string | null>(null);
+
+  // Clear the pinned cable on an outside click or Escape. Cable clicks call
+  // stopPropagation, so they don't reach this document listener.
+  $effect(() => {
+    const onDocClick = () => {
+      selectedCableId = null;
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") selectedCableId = null;
+    };
+    document.addEventListener("click", onDocClick);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("click", onDocClick);
+      window.removeEventListener("keydown", onKey);
+    };
+  });
 
   // Right-click context menu state.
   let menuOpen = $state(false);
@@ -438,17 +457,31 @@
 {#if uiStore.showCables}
   <svg class="cable-overlay" bind:this={svgEl} aria-hidden="true">
     {#each segments as seg (seg.id)}
+      {@const isSelected = selectedCableId === seg.id}
+      {@const isEmph = isSelected || hoveredId === seg.id}
+      {@const dimmed = selectedCableId !== null && !isEmph}
       <g class="cable-line">
+        {#if isSelected}
+          <!-- Halo behind the pinned cable so it stands out -->
+          <path
+            d={seg.d}
+            fill="none"
+            stroke={seg.color}
+            stroke-width="9"
+            stroke-linecap="round"
+            opacity="0.3"
+          />
+        {/if}
         <path
           d={seg.d}
           fill="none"
           stroke={seg.color}
-          stroke-width={hoveredId === seg.id ? 5 : 3}
+          stroke-width={isEmph ? 5 : 3}
           stroke-linecap="round"
-          opacity={hoveredId === seg.id ? 1 : 0.85}
+          opacity={dimmed ? 0.22 : isEmph ? 1 : 0.85}
         />
-        <circle cx={seg.ax} cy={seg.ay} r="4" fill={seg.color} />
-        <circle cx={seg.bx} cy={seg.by} r="4" fill={seg.color} />
+        <circle cx={seg.ax} cy={seg.ay} r="4" fill={seg.color} opacity={dimmed ? 0.22 : 1} />
+        <circle cx={seg.bx} cy={seg.by} r="4" fill={seg.color} opacity={dimmed ? 0.22 : 1} />
         <!-- Transparent wide hit area for hovering -->
         <path
           class="cable-hit"
@@ -466,6 +499,10 @@
             if (hoveredId === seg.id) hoveredId = null;
             hideCableTooltip();
           }}
+          onclick={(e) => {
+            e.stopPropagation();
+            selectedCableId = selectedCableId === seg.id ? null : seg.id;
+          }}
           oncontextmenu={(e) => openCableMenu(e, seg.id)}
         />
         {#if seg.labelText}
@@ -478,9 +515,15 @@
               stroke={seg.color}
               stroke-width="1"
               stroke-dasharray="2 2"
-              opacity="0.7"
+              opacity={dimmed ? 0.2 : 0.7}
             />
-            <circle cx={seg.leader.x1} cy={seg.leader.y1} r="2" fill={seg.color} />
+            <circle
+              cx={seg.leader.x1}
+              cy={seg.leader.y1}
+              r="2"
+              fill={seg.color}
+              opacity={dimmed ? 0.2 : 1}
+            />
           {/if}
           <text
             x={seg.labelX}
@@ -488,6 +531,8 @@
             text-anchor={seg.labelAnchor}
             dominant-baseline="middle"
             class="cable-label"
+            class:selected={isSelected}
+            opacity={dimmed ? 0.3 : 1}
           >{seg.labelText}</text>
         {/if}
       </g>
@@ -520,6 +565,10 @@
     overflow: visible;
     pointer-events: none;
     z-index: 5;
+  }
+
+  .cable-label.selected {
+    font-weight: 700;
   }
 
   .cable-label {
