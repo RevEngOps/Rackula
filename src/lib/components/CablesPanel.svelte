@@ -58,6 +58,7 @@
   interface DeviceOption {
     id: string;
     label: string;
+    face: "front" | "rear" | "both";
   }
 
   const deviceOptions = $derived.by<DeviceOption[]>(() => {
@@ -72,6 +73,7 @@
         opts.push({
           id: d.id,
           label: `${name} — ${rack.name} (U${toHumanUnits(d.position)})`,
+          face: d.face ?? "front",
         });
       }
     }
@@ -82,6 +84,10 @@
 
   function deviceLabel(id: string): string {
     return deviceOptions.find((o) => o.id === id)?.label ?? "(removed device)";
+  }
+
+  function deviceSpansBothFaces(id: string): boolean {
+    return deviceOptions.find((o) => o.id === id)?.face === "both";
   }
 
   function cableTypeLabel(type: CableType | undefined): string {
@@ -95,6 +101,12 @@
   let bDeviceId = $state("");
   let aInterface = $state("");
   let bInterface = $state("");
+  let aFace = $state<"front" | "rear">("front");
+  let bFace = $state<"front" | "rear">("front");
+
+  // Face selectors only apply to devices that span both faces.
+  const aSpansBoth = $derived(deviceSpansBothFaces(aDeviceId));
+  const bSpansBoth = $derived(deviceSpansBothFaces(bDeviceId));
   let cableType = $state<CableType>("cat6");
   let colour = $state(DEFAULT_COLOUR);
   // Raw text in the hex field (may be mid-typing / invalid); colour only
@@ -111,6 +123,8 @@
     bDeviceId = "";
     aInterface = "";
     bInterface = "";
+    aFace = "front";
+    bFace = "front";
     cableType = "cat6";
     colour = DEFAULT_COLOUR;
     colourText = DEFAULT_COLOUR;
@@ -143,6 +157,8 @@
     bDeviceId = cable.b_device_id;
     aInterface = cable.a_interface ?? "";
     bInterface = cable.b_interface ?? "";
+    aFace = cable.a_face ?? "front";
+    bFace = cable.b_face ?? "front";
     cableType = cable.type ?? "cat6";
     colour = cable.color ?? DEFAULT_COLOUR;
     colourText = colour;
@@ -182,6 +198,9 @@
       b_device_id: bDeviceId,
       a_interface: aInterface.trim() || undefined,
       b_interface: bInterface.trim() || undefined,
+      // Face only matters for devices that span both views.
+      a_face: aSpansBoth ? aFace : undefined,
+      b_face: bSpansBoth ? bFace : undefined,
       type: cableType,
       color: colour,
       label: label.trim() || undefined,
@@ -206,6 +225,15 @@
     }
     showForm = false;
     resetForm();
+  }
+
+  function handleDuplicate(id: string) {
+    const res = cableStore.duplicateCable(id);
+    if (res.errors) {
+      toastStore.showToast(res.errors.join(" "), "error");
+    } else {
+      toastStore.showToast("Cable duplicated", "success");
+    }
   }
 
   function handleDelete(id: string) {
@@ -257,6 +285,16 @@
           </select>
         </label>
 
+        {#if aSpansBoth}
+          <label class="field">
+            <span>Attach to face</span>
+            <select bind:value={aFace}>
+              <option value="front">Front</option>
+              <option value="rear">Rear</option>
+            </select>
+          </label>
+        {/if}
+
         <label class="field">
           <span>Port / interface (optional)</span>
           <input type="text" bind:value={aInterface} placeholder="e.g. Gi1/0/1" />
@@ -271,6 +309,16 @@
             {/each}
           </select>
         </label>
+
+        {#if bSpansBoth}
+          <label class="field">
+            <span>Attach to face</span>
+            <select bind:value={bFace}>
+              <option value="front">Front</option>
+              <option value="rear">Rear</option>
+            </select>
+          </label>
+        {/if}
 
         <label class="field">
           <span>Port / interface (optional)</span>
@@ -381,6 +429,7 @@
           </div>
           <div class="cable-actions">
             <button class="icon-btn" title="Edit cable" onclick={() => openEdit(cable)}>✎</button>
+            <button class="icon-btn" title="Duplicate cable" onclick={() => handleDuplicate(cable.id)}>⧉</button>
             <button class="icon-btn danger" title="Delete cable" onclick={() => handleDelete(cable.id)}>🗑</button>
           </div>
         </li>

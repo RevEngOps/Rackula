@@ -74,6 +74,16 @@
     uiStore.setSidebarTab("cables");
   }
 
+  function duplicateMenuCable() {
+    if (!menuCableId) return;
+    const res = cableStore.duplicateCable(menuCableId);
+    if (res.errors) {
+      toastStore.showToast(res.errors.join(" "), "error");
+    } else {
+      toastStore.showToast("Cable duplicated", "success");
+    }
+  }
+
   function deleteMenuCable() {
     if (!menuCableId) return;
     cableStore.removeCable(menuCableId);
@@ -81,8 +91,9 @@
   }
   let resizeTick = $state(0);
 
-  // Perpendicular spacing (content px) between parallel cables on the same pair.
-  const PAIR_SPACING = 22;
+  // Horizontal spacing (content px) between adjacent cable lanes. Wider spacing
+  // keeps the hit areas from overlapping so hover is reliable.
+  const PAIR_SPACING = 34;
 
   const cables = $derived(cableStore.cables);
 
@@ -100,6 +111,23 @@
 
   function faceOf(el: Element): "front" | "rear" {
     return el.getAttribute("data-rack-view") === "rear" ? "rear" : "front";
+  }
+
+  // Find a device's rendered element, preferring the requested face when the
+  // device spans both views (face: 'both' → two elements). Falls back to the
+  // first rendered element.
+  function findDeviceEl(
+    container: Element,
+    id: string,
+    face?: "front" | "rear",
+  ): Element | null {
+    const els = container.querySelectorAll(`[data-placed-id="${id}"]`);
+    if (face) {
+      for (const el of els) {
+        if (el.getAttribute("data-rack-view") === face) return el;
+      }
+    }
+    return els[0] ?? null;
   }
 
   // Human-readable name for a placed device (across all racks).
@@ -184,12 +212,8 @@
     };
     const items: Item[] = [];
     for (const c of cables) {
-      const aEl = container.querySelector(
-        `[data-placed-id="${c.a_device_id}"]`,
-      );
-      const bEl = container.querySelector(
-        `[data-placed-id="${c.b_device_id}"]`,
-      );
+      const aEl = findDeviceEl(container, c.a_device_id, c.a_face);
+      const bEl = findDeviceEl(container, c.b_device_id, c.b_face);
       if (!aEl || !bEl) continue; // device not currently rendered (e.g. other rack on mobile)
 
       let id1 = c.a_device_id;
@@ -290,66 +314,42 @@
       // depends only on the endpoints is computed once for the whole group.
       const first = group[0]!;
       const { p1, p2, side } = first;
-      const dx = p2.x - p1.x;
-      const dy = p2.y - p1.y;
-      const len = Math.hypot(dx, dy) || 1;
-      // Unit perpendicular to the A→B direction, oriented so it points toward
-      // the requested screen side (rear → right / +x, front → left / -x).
-      let nx = -dy / len;
-      let ny = dx / len;
-      const want = side === "right" ? 1 : -1;
-      if ((want === 1 && nx < 0) || (want === -1 && nx > 0)) {
-        nx = -nx;
-        ny = -ny;
-      }
-      const midX = (p1.x + p2.x) / 2;
-      const midY = (p1.y + p2.y) / 2;
-
-      // Callout label column: stacked vertically and pushed clear of the
-      // widest arc, on the same side the bundle fans toward.
       const dirX = side === "right" ? 1 : -1;
+      const y1 = p1.y;
+      const y2 = p2.y;
+      const midY = (y1 + y2) / 2;
+      // Outermost endpoint x — brackets stick out beyond this on the fan side.
+      const baseX = side === "right" ? Math.max(p1.x, p2.x) : Math.min(p1.x, p2.x);
+
+      // Callout label column: every label is broken out into a vertical column
+      // pushed clear of the widest bracket, on the side the bundle fans toward.
       const groupMaxLane = group.reduce((m, g) => Math.max(m, g.lane), 0);
-      const maxPeak = (groupMaxLane * PAIR_SPACING) / 2;
-      const labelDistance = Math.max(72, maxPeak + 44);
-      const labelColumnX = midX + dirX * labelDistance;
+      const maxMag = groupMaxLane * PAIR_SPACING;
+      const labelColumnX = baseX + dirX * (maxMag + 48);
       const ROW_HEIGHT = 16;
       const labelAnchor: "start" | "middle" | "end" =
-        count > 1 ? (side === "right" ? "start" : "end") : "middle";
+        side === "right" ? "start" : "end";
 
       group.forEach((it, i) => {
-        // Bow magnitude comes from the globally-assigned lane: lane 0 hugs the
-        // edge, higher lanes bow further out so overlapping cables (within this
-        // pair AND across pairs sharing the edge) stay visible.
+        // Squared (orthogonal) route: out from the device edge to this lane's x,
+        // along to the other endpoint's y, then back. Lane comes from the global
+        // assignment so overlapping cables get distinct, well-separated tracks.
         const mag = it.lane * PAIR_SPACING;
-        const cx = midX + nx * mag;
-        const cy = midY + ny * mag;
-        const d = `M ${p1.x} ${p1.y} Q ${cx} ${cy} ${p2.x} ${p2.y}`;
+        const laneX = baseX + dirX * mag;
+        const d = `M ${p1.x} ${y1} L ${laneX} ${y1} L ${laneX} ${y2} L ${p2.x} ${y2}`;
 
-        // Point on this cable's arc (peak, t=0.5) — where its leader attaches.
-        const peakX = 0.25 * p1.x + 0.5 * cx + 0.25 * p2.x;
-        const peakY = 0.25 * p1.y + 0.5 * cy + 0.25 * p2.y;
+        // Leader attaches at the middle of this cable's vertical track.
+        const attachX = laneX;
+        const attachY = midY;
 
-        let labelX: number;
-        let labelY: number;
-        let leader: { x1: number; y1: number; x2: number; y2: number } | null;
-
-        if (count > 1) {
-          // Spread labels into a vertical column with a dotted leader back to
-          // the cable so each is clearly readable and attributable.
-          labelX = labelColumnX;
-          labelY = midY + (i - (count - 1) / 2) * ROW_HEIGHT;
-          leader = {
-            x1: peakX,
-            y1: peakY,
-            x2: labelX - dirX * 4,
-            y2: labelY,
-          };
-        } else {
-          // Single cable: keep the label inline on the arc, no leader.
-          labelX = peakX;
-          labelY = peakY - 4;
-          leader = null;
-        }
+        const labelX = labelColumnX;
+        const labelY = midY + (i - (count - 1) / 2) * ROW_HEIGHT;
+        const leader = {
+          x1: attachX,
+          y1: attachY,
+          x2: labelX - dirX * 4,
+          y2: labelY,
+        };
 
         next.push({
           id: it.id,
@@ -423,7 +423,7 @@
           d={seg.d}
           fill="none"
           stroke="transparent"
-          stroke-width="14"
+          stroke-width="10"
           role="presentation"
           onmouseenter={(e) => {
             hoveredId = seg.id;
@@ -468,6 +468,7 @@
   x={menuX}
   y={menuY}
   onedit={editMenuCable}
+  onduplicate={duplicateMenuCable}
   ondelete={deleteMenuCable}
 />
 

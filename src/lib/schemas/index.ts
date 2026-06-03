@@ -434,10 +434,13 @@ export const CableSchema = z
     a_device_id: z.string().min(1, "A-side device ID is required"),
     // Optional free-text port/interface (device-to-device cables omit it)
     a_interface: z.string().max(100).optional(),
+    // Which face the A-side attaches to (for devices spanning both faces)
+    a_face: z.enum(["front", "rear"]).optional(),
 
     // B-side termination
     b_device_id: z.string().min(1, "B-side device ID is required"),
     b_interface: z.string().max(100).optional(),
+    b_face: z.enum(["front", "rear"]).optional(),
 
     // Cable properties
     type: CableTypeSchema.optional(),

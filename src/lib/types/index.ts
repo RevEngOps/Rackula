@@ -431,6 +431,11 @@ export interface Cable {
    * Omitted for device-to-device cables on devices without defined ports.
    */
   a_interface?: string;
+  /**
+   * Which rack face the A-side terminates on, for devices that span both
+   * (face: 'both'). Determines which rendering the overlay anchors to.
+   */
+  a_face?: "front" | "rear";
 
   // --- B-side termination ---
   /** Placed device UUID (B-side) */
@@ -440,6 +445,11 @@ export interface Cable {
    * Omitted for device-to-device cables on devices without defined ports.
    */
   b_interface?: string;
+  /**
+   * Which rack face the B-side terminates on, for devices that span both
+   * (face: 'both'). Determines which rendering the overlay anchors to.
+   */
+  b_face?: "front" | "rear";
 
   // --- Cable properties ---
   /** Cable type (e.g., 'cat6a', 'smf-os2') */

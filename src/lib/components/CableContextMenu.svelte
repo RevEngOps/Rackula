@@ -13,6 +13,7 @@
     open?: boolean;
     onOpenChange?: (open: boolean) => void;
     onedit?: () => void;
+    onduplicate?: () => void;
     ondelete?: () => void;
     /** Cursor viewport coordinates the menu anchors to. */
     x?: number;
@@ -23,6 +24,7 @@
     open = $bindable(false),
     onOpenChange,
     onedit,
+    onduplicate,
     ondelete,
     x,
     y,
@@ -60,6 +62,13 @@
     >
       <ContextMenu.Item class="context-menu-item" onSelect={handleSelect(onedit)}>
         <span class="context-menu-label">Edit</span>
+      </ContextMenu.Item>
+
+      <ContextMenu.Item
+        class="context-menu-item"
+        onSelect={handleSelect(onduplicate)}
+      >
+        <span class="context-menu-label">Duplicate</span>
       </ContextMenu.Item>
 
       <ContextMenu.Separator class="context-menu-separator" />

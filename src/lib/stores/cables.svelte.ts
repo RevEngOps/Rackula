@@ -15,8 +15,10 @@ import { getLayoutStore } from "./layout.svelte";
 export interface CreateCableInput {
   a_device_id: string;
   a_interface?: string;
+  a_face?: "front" | "rear";
   b_device_id: string;
   b_interface?: string;
+  b_face?: "front" | "rear";
   type?: CableType;
   color?: string;
   label?: string;
@@ -176,8 +178,10 @@ export function getCableStore() {
       id: generateId(),
       a_device_id: input.a_device_id,
       a_interface: input.a_interface,
+      a_face: input.a_face,
       b_device_id: input.b_device_id,
       b_interface: input.b_interface,
+      b_face: input.b_face,
       type: input.type,
       color: input.color,
       label: input.label,
@@ -191,6 +195,34 @@ export function getCableStore() {
     layoutStore.markDirty();
 
     return { cable, errors: null };
+  }
+
+  /**
+   * Duplicate an existing cable (same endpoints/properties, new id).
+   * Useful for multiple links between the same two devices.
+   * @returns The new cable, or an error if the source wasn't found / invalid.
+   */
+  function duplicateCable(
+    id: string,
+  ): { cable: Cable; errors: null } | { cable: null; errors: string[] } {
+    const existing = getCableById(id);
+    if (!existing) {
+      return { cable: null, errors: ["Cable not found"] };
+    }
+    return addCable({
+      a_device_id: existing.a_device_id,
+      a_interface: existing.a_interface,
+      a_face: existing.a_face,
+      b_device_id: existing.b_device_id,
+      b_interface: existing.b_interface,
+      b_face: existing.b_face,
+      type: existing.type,
+      color: existing.color,
+      label: existing.label,
+      length: existing.length,
+      length_unit: existing.length_unit,
+      status: existing.status,
+    });
   }
 
   /**
@@ -306,6 +338,7 @@ export function getCableStore() {
 
     // CRUD operations
     addCable,
+    duplicateCable,
     updateCable,
     removeCable,
     removeCablesByDevice,
