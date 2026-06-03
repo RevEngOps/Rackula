@@ -92,6 +92,88 @@
     return deviceOptions.find((o) => o.id === id)?.face === "both";
   }
 
+  // =====================================================================
+  // Cable report (bill of materials): counts by type + length per rack
+  // =====================================================================
+  let showReport = $state(false);
+  // Rack selection for the report. A rack defaults to selected; only racks
+  // explicitly set to false are excluded.
+  let selectedRacks = $state<Record<string, boolean>>({});
+
+  function isRackSelected(rackId: string): boolean {
+    return selectedRacks[rackId] !== false;
+  }
+  function toggleReportRack(rackId: string) {
+    selectedRacks[rackId] = !isRackSelected(rackId);
+  }
+
+  interface ReportRow {
+    typeLabel: string;
+    length: string;
+    count: number;
+    sortType: string;
+    sortLen: number;
+  }
+
+  const report = $derived.by(() => {
+    // Map every placed device to its rack.
+    const deviceRack = new Map<string, string>();
+    for (const rack of layoutStore.racks) {
+      for (const d of rack.devices) deviceRack.set(d.id, rack.id);
+    }
+
+    // A cable counts if either endpoint sits in a selected rack.
+    const included = cables.filter((c) => {
+      const ra = deviceRack.get(c.a_device_id);
+      const rb = deviceRack.get(c.b_device_id);
+      return (
+        (ra !== undefined && isRackSelected(ra)) ||
+        (rb !== undefined && isRackSelected(rb))
+      );
+    });
+
+    const groups = new Map<string, ReportRow>();
+    for (const c of included) {
+      const typeLabel = cableTypeLabel(c.type);
+      const length =
+        c.length != null ? `${c.length}${c.length_unit ?? ""}` : "—";
+      const key = `${c.type ?? "cable"}__${length}`;
+      const existing = groups.get(key);
+      if (existing) {
+        existing.count += 1;
+      } else {
+        groups.set(key, {
+          typeLabel,
+          length,
+          count: 1,
+          sortType: typeLabel,
+          sortLen: c.length ?? Number.POSITIVE_INFINITY,
+        });
+      }
+    }
+
+    const rows = [...groups.values()].sort(
+      (a, b) =>
+        a.sortType.localeCompare(b.sortType) || a.sortLen - b.sortLen,
+    );
+    return { rows, total: included.length };
+  });
+
+  async function copyReport() {
+    const lines = ["Type,Length,Quantity"];
+    for (const r of report.rows) {
+      lines.push(`${r.typeLabel},${r.length},${r.count}`);
+    }
+    lines.push(`Total,,${report.total}`);
+    const text = lines.join("\n");
+    try {
+      await navigator.clipboard.writeText(text);
+      toastStore.showToast("Cable report copied", "success");
+    } catch {
+      toastStore.showToast("Could not copy report", "error");
+    }
+  }
+
   function cableTypeLabel(type: CableType | undefined): string {
     return CABLE_TYPES.find((t) => t.value === type)?.label ?? "Cable";
   }
@@ -296,7 +378,56 @@
     <p class="empty">Place at least two devices in a rack to connect them with a cable.</p>
   {:else}
     {#if !showForm}
-      <button class="add-btn" onclick={openAdd}>+ Add cable</button>
+      <div class="toolbar">
+        <button class="add-btn" onclick={openAdd}>+ Add cable</button>
+        <button
+          class="add-btn"
+          class:active={showReport}
+          onclick={() => (showReport = !showReport)}
+          aria-expanded={showReport}
+        >📊 Report</button>
+      </div>
+    {/if}
+
+    {#if showReport && !showForm}
+      <div class="report">
+        <div class="report-racks">
+          <span class="report-label">Racks</span>
+          {#each layoutStore.racks as rack (rack.id)}
+            <label class="report-rack">
+              <input
+                type="checkbox"
+                checked={isRackSelected(rack.id)}
+                onchange={() => toggleReportRack(rack.id)}
+              />
+              <span>{rack.name}</span>
+            </label>
+          {/each}
+        </div>
+
+        {#if report.rows.length === 0}
+          <p class="empty">No cables in the selected racks.</p>
+        {:else}
+          <table class="report-table">
+            <thead>
+              <tr><th>Type</th><th>Length</th><th class="num">Qty</th></tr>
+            </thead>
+            <tbody>
+              {#each report.rows as row (row.typeLabel + row.length)}
+                <tr>
+                  <td>{row.typeLabel}</td>
+                  <td>{row.length}</td>
+                  <td class="num">{row.count}</td>
+                </tr>
+              {/each}
+            </tbody>
+            <tfoot>
+              <tr><td>Total</td><td></td><td class="num">{report.total}</td></tr>
+            </tfoot>
+          </table>
+          <button class="add-btn" onclick={copyReport}>Copy as CSV</button>
+        {/if}
+      </div>
     {/if}
 
     {#if showForm}
@@ -543,6 +674,70 @@
 
   .add-btn:hover {
     border-color: var(--colour-selection);
+  }
+
+  .add-btn.active {
+    border-color: var(--colour-selection);
+    color: var(--colour-text);
+  }
+
+  .toolbar {
+    display: flex;
+    gap: var(--space-2);
+    flex-wrap: wrap;
+  }
+
+  .report {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    padding: var(--space-3);
+    border: 1px solid var(--colour-border);
+    border-radius: var(--radius-md, 6px);
+    background: var(--colour-sidebar-bg);
+  }
+
+  .report-racks {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  .report-label {
+    color: var(--colour-text-muted);
+    font-size: var(--font-size-sm);
+  }
+
+  .report-rack {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+    font-size: var(--font-size-sm);
+    cursor: pointer;
+  }
+
+  .report-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: var(--font-size-sm);
+  }
+
+  .report-table th,
+  .report-table td {
+    text-align: left;
+    padding: var(--space-1) var(--space-2);
+    border-bottom: 1px solid var(--colour-border);
+  }
+
+  .report-table th.num,
+  .report-table td.num {
+    text-align: right;
+  }
+
+  .report-table tfoot td {
+    font-weight: var(--font-weight-semibold, 600);
+    border-bottom: none;
   }
 
   .cable-form {
