@@ -144,9 +144,13 @@
       formError = "Select both devices.";
       return;
     }
+    // <input type="number"> binds as a number (or null when empty); it may
+    // also still be the initial empty string — handle all of these.
     let lengthNum: number | undefined;
-    if (lengthValue.trim() !== "") {
-      lengthNum = Number(lengthValue);
+    const rawLength =
+      typeof lengthValue === "string" ? lengthValue.trim() : lengthValue;
+    if (rawLength !== "" && rawLength !== null && rawLength !== undefined) {
+      lengthNum = Number(rawLength);
       if (!Number.isFinite(lengthNum) || lengthNum <= 0) {
         formError = "Length must be a positive number.";
         return;
