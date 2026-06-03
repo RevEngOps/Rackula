@@ -194,7 +194,7 @@ function orderRackFields(rack: Rack): Record<string, unknown> {
 
 /**
  * Order Cable fields according to schema v1.0.0
- * Field order: id, a_device_id, a_interface, b_device_id, b_interface, type, color, label, length, length_unit, status
+ * Field order: id, a_device_id, a_interface, a_face, b_device_id, b_interface, b_face, type, color, label, length, length_unit, status
  */
 function orderCableFields(cable: Cable): Record<string, unknown> {
   const ordered: Record<string, unknown> = {};
@@ -205,10 +205,12 @@ function orderCableFields(cable: Cable): Record<string, unknown> {
   // --- A-side termination ---
   ordered.a_device_id = cable.a_device_id;
   ordered.a_interface = cable.a_interface;
+  if (cable.a_face !== undefined) ordered.a_face = cable.a_face;
 
   // --- B-side termination ---
   ordered.b_device_id = cable.b_device_id;
   ordered.b_interface = cable.b_interface;
+  if (cable.b_face !== undefined) ordered.b_face = cable.b_face;
 
   // --- Cable properties ---
   if (cable.type !== undefined) ordered.type = cable.type;
