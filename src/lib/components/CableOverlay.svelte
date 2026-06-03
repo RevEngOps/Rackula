@@ -307,11 +307,19 @@
       else groups.set(it.pairKey, [it]);
     }
 
-    const next: typeof segments = [];
+    // 4. Build cable geometry. Label positions are filled in afterwards by a
+    //    global per-side/edge pass so labels from DIFFERENT appliances don't
+    //    overlap either (not just within one device pair).
+    type Placed = {
+      seg: (typeof segments)[number];
+      side: "left" | "right";
+      attachX: number;
+      attachY: number;
+      baseX: number;
+    };
+    const placed: Placed[] = [];
+
     for (const group of groups.values()) {
-      const count = group.length;
-      // All cables in a group share the same two endpoints, so geometry that
-      // depends only on the endpoints is computed once for the whole group.
       const first = group[0]!;
       const { p1, p2, side } = first;
       const dirX = side === "right" ? 1 : -1;
@@ -321,16 +329,7 @@
       // Outermost endpoint x — brackets stick out beyond this on the fan side.
       const baseX = side === "right" ? Math.max(p1.x, p2.x) : Math.min(p1.x, p2.x);
 
-      // Callout label column: every label is broken out into a vertical column
-      // pushed clear of the widest bracket, on the side the bundle fans toward.
-      const groupMaxLane = group.reduce((m, g) => Math.max(m, g.lane), 0);
-      const maxMag = groupMaxLane * PAIR_SPACING;
-      const labelColumnX = baseX + dirX * (maxMag + 48);
-      const ROW_HEIGHT = 16;
-      const labelAnchor: "start" | "middle" | "end" =
-        side === "right" ? "start" : "end";
-
-      group.forEach((it, i) => {
+      for (const it of group) {
         // Squared (orthogonal) route: out from the device edge to this lane's x,
         // along to the other endpoint's y, then back. Lane comes from the global
         // assignment so overlapping cables get distinct, well-separated tracks.
@@ -338,37 +337,70 @@
         const laneX = baseX + dirX * mag;
         const d = `M ${p1.x} ${y1} L ${laneX} ${y1} L ${laneX} ${y2} L ${p2.x} ${y2}`;
 
-        // Leader attaches at the middle of this cable's vertical track.
-        const attachX = laneX;
-        const attachY = midY;
-
-        const labelX = labelColumnX;
-        const labelY = midY + (i - (count - 1) / 2) * ROW_HEIGHT;
-        const leader = {
-          x1: attachX,
-          y1: attachY,
-          x2: labelX - dirX * 4,
-          y2: labelY,
-        };
-
-        next.push({
-          id: it.id,
-          color: it.color,
-          d,
-          ax: p1.x,
-          ay: p1.y,
-          bx: p2.x,
-          by: p2.y,
-          labelX,
-          labelY,
-          labelText: it.labelText,
-          labelAnchor,
-          leader,
-          info: it.info,
+        placed.push({
+          side,
+          attachX: laneX, // leader attaches at the middle of the vertical track
+          attachY: midY,
+          baseX,
+          seg: {
+            id: it.id,
+            color: it.color,
+            d,
+            ax: p1.x,
+            ay: p1.y,
+            bx: p2.x,
+            by: p2.y,
+            labelX: 0,
+            labelY: 0,
+            labelText: it.labelText,
+            labelAnchor: side === "right" ? "start" : "end",
+            leader: { x1: laneX, y1: midY, x2: 0, y2: 0 },
+            info: it.info,
+          },
         });
-      });
+      }
     }
-    segments = next;
+
+    // 5. Lay labels out in columns grouped by side + edge corridor (so each rack
+    //    edge gets its own column), stacking them with no vertical overlap.
+    const LABEL_GAP = 48;
+    const ROW_HEIGHT = 16;
+    const colGroups = new Map<string, Placed[]>();
+    for (const p of placed) {
+      const key = `${p.side}|${Math.round(p.baseX / 8)}`;
+      const arr = colGroups.get(key);
+      if (arr) arr.push(p);
+      else colGroups.set(key, [p]);
+    }
+    for (const grp of colGroups.values()) {
+      const side = grp[0]!.side;
+      const dirX = side === "right" ? 1 : -1;
+      // Column sits beyond the furthest track in this corridor.
+      const extreme =
+        side === "right"
+          ? Math.max(...grp.map((p) => p.attachX))
+          : Math.min(...grp.map((p) => p.attachX));
+      const columnX = extreme + dirX * LABEL_GAP;
+
+      // Sort by the cable's natural y, then push each down so consecutive
+      // labels are at least ROW_HEIGHT apart — removes cross-appliance overlap.
+      grp.sort((a, b) => a.attachY - b.attachY);
+      let lastY = -Infinity;
+      for (const p of grp) {
+        const y = Math.max(p.attachY, lastY + ROW_HEIGHT);
+        lastY = y;
+        p.seg.labelX = columnX;
+        p.seg.labelY = y;
+        p.seg.leader = {
+          x1: p.attachX,
+          y1: p.attachY,
+          x2: columnX - dirX * 4,
+          y2: y,
+        };
+      }
+    }
+
+    segments = placed.map((p) => p.seg);
   }
 
   // Recompute when cables, geometry, visibility, zoom, the svg ref, or a
