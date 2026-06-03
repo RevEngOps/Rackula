@@ -584,6 +584,7 @@
               e.stopPropagation();
               selectedCableId = selectedCableId === seg.id ? null : seg.id;
             }}
+            oncontextmenu={(e) => openCableMenu(e, seg.id)}
           >{seg.labelText}</text>
         {/if}
       </g>
