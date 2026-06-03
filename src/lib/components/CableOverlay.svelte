@@ -13,8 +13,18 @@
   import { getUIStore } from "$lib/stores/ui.svelte";
   import { getLayoutStore } from "$lib/stores/layout.svelte";
   import { getCanvasStore } from "$lib/stores/canvas.svelte";
+  import {
+    showCableTooltip,
+    moveCableTooltip,
+    hideCableTooltip,
+    type CableTooltipInfo,
+  } from "$lib/stores/cableTooltip.svelte";
+  import { requestEditCable } from "$lib/stores/cableEdit.svelte";
+  import { getToastStore } from "$lib/stores/toast.svelte";
+  import CableContextMenu from "./CableContextMenu.svelte";
 
   const cableStore = getCableStore();
+  const toastStore = getToastStore();
   const uiStore = getUIStore();
   const layoutStore = getLayoutStore();
   const canvasStore = getCanvasStore();
@@ -32,8 +42,43 @@
       labelX: number;
       labelY: number;
       labelText: string;
+      labelAnchor: "start" | "middle" | "end";
+      // Dotted leader from the cable to its label (null for single cables).
+      leader: { x1: number; y1: number; x2: number; y2: number } | null;
+      // Resolved details shown in the hover tooltip.
+      info: CableTooltipInfo;
     }>
   >([]);
+  // Id of the cable currently hovered (for visual emphasis).
+  let hoveredId = $state<string | null>(null);
+
+  // Right-click context menu state.
+  let menuOpen = $state(false);
+  let menuX = $state(0);
+  let menuY = $state(0);
+  let menuCableId = $state<string | null>(null);
+
+  function openCableMenu(event: MouseEvent, id: string) {
+    event.preventDefault();
+    event.stopPropagation(); // don't also open the canvas context menu
+    hideCableTooltip();
+    menuCableId = id;
+    menuX = event.clientX;
+    menuY = event.clientY;
+    menuOpen = true;
+  }
+
+  function editMenuCable() {
+    if (!menuCableId) return;
+    requestEditCable(menuCableId);
+    uiStore.setSidebarTab("cables");
+  }
+
+  function deleteMenuCable() {
+    if (!menuCableId) return;
+    cableStore.removeCable(menuCableId);
+    toastStore.showToast("Cable removed", "info");
+  }
   let resizeTick = $state(0);
 
   // Perpendicular spacing (content px) between parallel cables on the same pair.
@@ -55,6 +100,25 @@
 
   function faceOf(el: Element): "front" | "rear" {
     return el.getAttribute("data-rack-view") === "rear" ? "rear" : "front";
+  }
+
+  // Human-readable name for a placed device (across all racks).
+  function deviceName(id: string): string {
+    for (const rack of layoutStore.racks) {
+      const d = rack.devices.find((x) => x.id === id);
+      if (d) {
+        const dt = layoutStore.device_types.find(
+          (t) => t.slug === d.device_type,
+        );
+        return d.name || d.label || dt?.model || dt?.slug || d.device_type;
+      }
+    }
+    return "(removed device)";
+  }
+
+  function endpointLabel(id: string, iface?: string): string {
+    const name = deviceName(id);
+    return iface ? `${name} : ${iface}` : name;
   }
 
   // Anchor at the device's side edge, vertical middle: right edge for rear,
@@ -109,6 +173,14 @@
       // Which screen side the bundle fans toward: rear endpoints → right,
       // front endpoints → left.
       side: "left" | "right";
+      info: CableTooltipInfo;
+      // Vertical extent + representative x of the (straight) cable, used to
+      // detect cables that would run over one another along the same edge.
+      yMin: number;
+      yMax: number;
+      cxRep: number;
+      // Assigned lane (0 = hugs the edge); larger lanes bow further out.
+      lane: number;
     };
     const items: Item[] = [];
     for (const c of cables) {
@@ -132,23 +204,78 @@
       const face1 = faceOf(el1);
       const face2 = faceOf(el2);
 
+      const lengthText =
+        c.length != null ? `${c.length}${c.length_unit ?? ""}` : undefined;
       const labelParts: string[] = [];
       if (c.label) labelParts.push(c.label);
-      if (c.length != null) labelParts.push(`${c.length}${c.length_unit ?? ""}`);
+      if (lengthText) labelParts.push(lengthText);
+
+      // Tooltip uses the cable's original A/B orientation (as entered), not the
+      // id-sorted geometry order.
+      const info: CableTooltipInfo = {
+        color: c.color,
+        type: c.type,
+        a: endpointLabel(c.a_device_id, c.a_interface),
+        b: endpointLabel(c.b_device_id, c.b_interface),
+        length: lengthText,
+        label: c.label,
+      };
+
+      const p1 = anchorOf(el1, face1, containerRect, scale);
+      const p2 = anchorOf(el2, face2, containerRect, scale);
 
       items.push({
         id: c.id,
         color: c.color ?? "#6B7280",
         labelText: labelParts.join(" · "),
-        p1: anchorOf(el1, face1, containerRect, scale),
-        p2: anchorOf(el2, face2, containerRect, scale),
+        p1,
+        p2,
         pairKey: `${id1}|${id2}`,
         side: face1 === "rear" || face2 === "rear" ? "right" : "left",
+        info,
+        yMin: Math.min(p1.y, p2.y),
+        yMax: Math.max(p1.y, p2.y),
+        cxRep: (p1.x + p2.x) / 2,
+        lane: 0,
       });
     }
 
-    // 2. Group by device pair and fan each cable out along a perpendicular
-    //    offset so multiple cables between the same devices stay distinct.
+    // 2. Assign lanes per side so cables that would overlap don't hide each
+    //    other. Two cables conflict if they're the same pair, OR they run along
+    //    the same edge corridor (similar x) with overlapping vertical extents —
+    //    e.g. a long top↔bottom cable vs. a short cable in the middle. Longest
+    //    cables are placed first so they hug the edge (lane 0) and shorter
+    //    overlapping ones bow outward to stay visible.
+    const CORRIDOR_EPS = 8; // px: cables within this x distance share a corridor
+    const conflicts = (a: Item, b: Item): boolean => {
+      if (a.pairKey === b.pairKey) return true;
+      const sameCorridor = Math.abs(a.cxRep - b.cxRep) < CORRIDOR_EPS;
+      const overlapY = a.yMin < b.yMax && b.yMin < a.yMax;
+      return sameCorridor && overlapY;
+    };
+    for (const sideName of ["left", "right"] as const) {
+      const sideItems = items
+        .filter((it) => it.side === sideName)
+        .sort((a, b) => b.yMax - b.yMin - (a.yMax - a.yMin));
+      const lanes: Item[][] = [];
+      for (const it of sideItems) {
+        let placed = false;
+        for (let L = 0; L < lanes.length; L++) {
+          if (!lanes[L]!.some((o) => conflicts(o, it))) {
+            lanes[L]!.push(it);
+            it.lane = L;
+            placed = true;
+            break;
+          }
+        }
+        if (!placed) {
+          it.lane = lanes.length;
+          lanes.push([it]);
+        }
+      }
+    }
+
+    // 3. Group by device pair for label layout (callout columns).
     const groups = new Map<string, Item[]>();
     for (const it of items) {
       const arr = groups.get(it.pairKey);
@@ -159,37 +286,70 @@
     const next: typeof segments = [];
     for (const group of groups.values()) {
       const count = group.length;
-      group.forEach((it, i) => {
-        const { p1, p2, side } = it;
-        const dx = p2.x - p1.x;
-        const dy = p2.y - p1.y;
-        const len = Math.hypot(dx, dy) || 1;
-        // Unit perpendicular to the A→B direction, oriented so it points toward
-        // the requested screen side (rear → right / +x, front → left / -x).
-        let nx = -dy / len;
-        let ny = dx / len;
-        const want = side === "right" ? 1 : -1;
-        if ((want === 1 && nx < 0) || (want === -1 && nx > 0)) {
-          nx = -nx;
-          ny = -ny;
-        }
+      // All cables in a group share the same two endpoints, so geometry that
+      // depends only on the endpoints is computed once for the whole group.
+      const first = group[0]!;
+      const { p1, p2, side } = first;
+      const dx = p2.x - p1.x;
+      const dy = p2.y - p1.y;
+      const len = Math.hypot(dx, dy) || 1;
+      // Unit perpendicular to the A→B direction, oriented so it points toward
+      // the requested screen side (rear → right / +x, front → left / -x).
+      let nx = -dy / len;
+      let ny = dx / len;
+      const want = side === "right" ? 1 : -1;
+      if ((want === 1 && nx < 0) || (want === -1 && nx > 0)) {
+        nx = -nx;
+        ny = -ny;
+      }
+      const midX = (p1.x + p2.x) / 2;
+      const midY = (p1.y + p2.y) / 2;
 
-        // One-directional fan: the first cable runs straight along the edge,
-        // each subsequent one bows further out on the same side.
-        const mag = i * PAIR_SPACING;
-        const midX = (p1.x + p2.x) / 2;
-        const midY = (p1.y + p2.y) / 2;
+      // Callout label column: stacked vertically and pushed clear of the
+      // widest arc, on the same side the bundle fans toward.
+      const dirX = side === "right" ? 1 : -1;
+      const groupMaxLane = group.reduce((m, g) => Math.max(m, g.lane), 0);
+      const maxPeak = (groupMaxLane * PAIR_SPACING) / 2;
+      const labelDistance = Math.max(72, maxPeak + 44);
+      const labelColumnX = midX + dirX * labelDistance;
+      const ROW_HEIGHT = 16;
+      const labelAnchor: "start" | "middle" | "end" =
+        count > 1 ? (side === "right" ? "start" : "end") : "middle";
+
+      group.forEach((it, i) => {
+        // Bow magnitude comes from the globally-assigned lane: lane 0 hugs the
+        // edge, higher lanes bow further out so overlapping cables (within this
+        // pair AND across pairs sharing the edge) stay visible.
+        const mag = it.lane * PAIR_SPACING;
         const cx = midX + nx * mag;
         const cy = midY + ny * mag;
         const d = `M ${p1.x} ${p1.y} Q ${cx} ${cy} ${p2.x} ${p2.y}`;
 
-        // Stagger each cable's label to a distinct point ALONG its own arc so
-        // labels for multiple cables on the same pair don't stack on top of
-        // each other. t spreads evenly across the bundle (e.g. 1/4, 2/4, 3/4).
-        const t = count > 1 ? (i + 1) / (count + 1) : 0.5;
-        const mt = 1 - t;
-        const labelX = mt * mt * p1.x + 2 * mt * t * cx + t * t * p2.x;
-        const labelY = mt * mt * p1.y + 2 * mt * t * cy + t * t * p2.y - 4;
+        // Point on this cable's arc (peak, t=0.5) — where its leader attaches.
+        const peakX = 0.25 * p1.x + 0.5 * cx + 0.25 * p2.x;
+        const peakY = 0.25 * p1.y + 0.5 * cy + 0.25 * p2.y;
+
+        let labelX: number;
+        let labelY: number;
+        let leader: { x1: number; y1: number; x2: number; y2: number } | null;
+
+        if (count > 1) {
+          // Spread labels into a vertical column with a dotted leader back to
+          // the cable so each is clearly readable and attributable.
+          labelX = labelColumnX;
+          labelY = midY + (i - (count - 1) / 2) * ROW_HEIGHT;
+          leader = {
+            x1: peakX,
+            y1: peakY,
+            x2: labelX - dirX * 4,
+            y2: labelY,
+          };
+        } else {
+          // Single cable: keep the label inline on the arc, no leader.
+          labelX = peakX;
+          labelY = peakY - 4;
+          leader = null;
+        }
 
         next.push({
           id: it.id,
@@ -202,6 +362,9 @@
           labelX,
           labelY,
           labelText: it.labelText,
+          labelAnchor,
+          leader,
+          info: it.info,
         });
       });
     }
@@ -248,17 +411,50 @@
           d={seg.d}
           fill="none"
           stroke={seg.color}
-          stroke-width="3"
+          stroke-width={hoveredId === seg.id ? 5 : 3}
           stroke-linecap="round"
-          opacity="0.85"
+          opacity={hoveredId === seg.id ? 1 : 0.85}
         />
         <circle cx={seg.ax} cy={seg.ay} r="4" fill={seg.color} />
         <circle cx={seg.bx} cy={seg.by} r="4" fill={seg.color} />
+        <!-- Transparent wide hit area for hovering -->
+        <path
+          class="cable-hit"
+          d={seg.d}
+          fill="none"
+          stroke="transparent"
+          stroke-width="14"
+          role="presentation"
+          onmouseenter={(e) => {
+            hoveredId = seg.id;
+            showCableTooltip(seg.info, e.clientX, e.clientY);
+          }}
+          onmousemove={(e) => moveCableTooltip(e.clientX, e.clientY)}
+          onmouseleave={() => {
+            if (hoveredId === seg.id) hoveredId = null;
+            hideCableTooltip();
+          }}
+          oncontextmenu={(e) => openCableMenu(e, seg.id)}
+        />
         {#if seg.labelText}
+          {#if seg.leader}
+            <line
+              x1={seg.leader.x1}
+              y1={seg.leader.y1}
+              x2={seg.leader.x2}
+              y2={seg.leader.y2}
+              stroke={seg.color}
+              stroke-width="1"
+              stroke-dasharray="2 2"
+              opacity="0.7"
+            />
+            <circle cx={seg.leader.x1} cy={seg.leader.y1} r="2" fill={seg.color} />
+          {/if}
           <text
             x={seg.labelX}
             y={seg.labelY}
-            text-anchor="middle"
+            text-anchor={seg.labelAnchor}
+            dominant-baseline="middle"
             class="cable-label"
           >{seg.labelText}</text>
         {/if}
@@ -267,7 +463,22 @@
   </svg>
 {/if}
 
+<CableContextMenu
+  bind:open={menuOpen}
+  x={menuX}
+  y={menuY}
+  onedit={editMenuCable}
+  ondelete={deleteMenuCable}
+/>
+
 <style>
+  /* Only the cable hit-areas capture pointer events; the rest of the overlay
+     stays transparent to clicks/drags so panning and device selection work. */
+  .cable-hit {
+    pointer-events: stroke;
+    cursor: pointer;
+  }
+
   .cable-overlay {
     position: absolute;
     inset: 0;

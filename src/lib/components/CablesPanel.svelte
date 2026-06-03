@@ -11,7 +11,10 @@
   import { getUIStore } from "$lib/stores/ui.svelte";
   import { getToastStore } from "$lib/stores/toast.svelte";
   import { toHumanUnits } from "$lib/utils/position";
-  import ColourPicker from "./ColourPicker.svelte";
+  import {
+    getEditCableRequest,
+    clearEditCableRequest,
+  } from "$lib/stores/cableEdit.svelte";
   import type { Cable, CableType, LengthUnit } from "$lib/types";
 
   const layoutStore = getLayoutStore();
@@ -94,6 +97,9 @@
   let bInterface = $state("");
   let cableType = $state<CableType>("cat6");
   let colour = $state(DEFAULT_COLOUR);
+  // Raw text in the hex field (may be mid-typing / invalid); colour only
+  // updates once it's a valid 6-digit hex.
+  let colourText = $state(DEFAULT_COLOUR);
   let lengthValue = $state("");
   let lengthUnit = $state<LengthUnit>("m");
   let label = $state("");
@@ -107,10 +113,23 @@
     bInterface = "";
     cableType = "cat6";
     colour = DEFAULT_COLOUR;
+    colourText = DEFAULT_COLOUR;
     lengthValue = "";
     lengthUnit = "m";
     label = "";
     formError = null;
+  }
+
+  // Set the colour from a preset/native picker and keep the hex field in sync.
+  function setColour(hex: string) {
+    colour = hex;
+    colourText = hex;
+  }
+
+  // Editable hex field: accept free typing, commit to colour when valid.
+  function handleHexInput(value: string) {
+    colourText = value;
+    if (/^#[0-9A-Fa-f]{6}$/.test(value)) colour = value;
   }
 
   function openAdd() {
@@ -126,6 +145,7 @@
     bInterface = cable.b_interface ?? "";
     cableType = cable.type ?? "cat6";
     colour = cable.color ?? DEFAULT_COLOUR;
+    colourText = colour;
     lengthValue = cable.length != null ? String(cable.length) : "";
     lengthUnit = cable.length_unit ?? "m";
     label = cable.label ?? "";
@@ -193,6 +213,16 @@
     toastStore.showToast("Cable removed", "info");
     if (editingId === id) cancelForm();
   }
+
+  // Open a cable for editing when requested from elsewhere (e.g. the canvas
+  // right-click "Edit" action).
+  $effect(() => {
+    const id = getEditCableRequest();
+    if (!id) return;
+    const cable = cableStore.getCableById(id);
+    if (cable) openEdit(cable);
+    clearEditCableRequest();
+  });
 </script>
 
 <div class="cables-panel">
@@ -266,11 +296,31 @@
                 class:active={colour.toUpperCase() === preset.toUpperCase()}
                 style="background:{preset}"
                 aria-label="Use colour {preset}"
-                onclick={() => (colour = preset)}
+                onclick={() => setColour(preset)}
               ></button>
             {/each}
           </div>
-          <ColourPicker value={colour} onchange={(c) => (colour = c)} />
+          <div class="custom-colour">
+            <span class="custom-colour-label">Custom</span>
+            <input
+              type="color"
+              class="custom-colour-picker"
+              value={colour}
+              oninput={(e) => setColour(e.currentTarget.value)}
+              title="Pick a custom colour"
+              aria-label="Pick a custom colour"
+            />
+            <input
+              type="text"
+              class="custom-colour-hex"
+              value={colourText}
+              oninput={(e) => handleHexInput(e.currentTarget.value)}
+              placeholder="#2563EB"
+              maxlength="7"
+              spellcheck="false"
+              aria-label="Custom hex colour"
+            />
+          </div>
         </div>
 
         <div class="field length-field">
@@ -445,6 +495,56 @@
   .swatch.active {
     outline: 2px solid var(--colour-selection);
     outline-offset: 1px;
+  }
+
+  /* Custom colour row: native picker + editable hex, reflows within the panel */
+  .custom-colour {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    flex-wrap: wrap;
+  }
+
+  .custom-colour-label {
+    color: var(--colour-text-muted);
+    font-size: var(--font-size-sm);
+  }
+
+  .custom-colour-picker {
+    width: 26px;
+    height: 26px;
+    flex: 0 0 auto;
+    padding: 0;
+    background: none;
+    border: 1px solid var(--colour-border);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    appearance: none;
+    -webkit-appearance: none;
+  }
+  .custom-colour-picker::-webkit-color-swatch-wrapper {
+    padding: 0;
+  }
+  .custom-colour-picker::-webkit-color-swatch {
+    border: none;
+    border-radius: calc(var(--radius-sm) - 1px);
+  }
+  .custom-colour-picker::-moz-color-swatch {
+    border: none;
+    border-radius: calc(var(--radius-sm) - 1px);
+  }
+
+  .custom-colour-hex {
+    flex: 1;
+    min-width: 5rem;
+    padding: var(--space-1) var(--space-2);
+    border: 1px solid var(--colour-border);
+    border-radius: var(--radius-sm);
+    background: var(--colour-input-bg, var(--colour-bg, #fff));
+    color: var(--colour-text);
+    font-family: var(--font-mono, monospace);
+    font-size: var(--font-size-sm);
+    text-transform: uppercase;
   }
 
   .length-row {

@@ -13,6 +13,7 @@
   import EditPanel from "$lib/components/EditPanel.svelte";
   import ToastContainer from "$lib/components/ToastContainer.svelte";
   import PortTooltip from "$lib/components/PortTooltip.svelte";
+  import CableTooltip from "$lib/components/CableTooltip.svelte";
   import DragTooltip from "$lib/components/DragTooltip.svelte";
   import KeyboardHandler from "$lib/components/KeyboardHandler.svelte";
   import MobileHistoryControls from "$lib/components/mobile/MobileHistoryControls.svelte";
@@ -694,6 +695,9 @@
 
     <!-- Port tooltip for network interface hover -->
     <PortTooltip />
+
+    <!-- Cable tooltip for cable hover -->
+    <CableTooltip />
 
     <!-- Drag tooltip for device name/U-height during drag -->
     <DragTooltip />
