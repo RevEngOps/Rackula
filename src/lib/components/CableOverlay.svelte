@@ -47,20 +47,30 @@
       layoutStore.racks.map((r) => [
         r.id,
         r.view,
+        r.show_rear,
         r.devices.map((d) => [d.id, d.position, d.face, d.slot_position]),
       ]),
     ),
   );
 
-  function centerOf(
+  function faceOf(el: Element): "front" | "rear" {
+    return el.getAttribute("data-rack-view") === "rear" ? "rear" : "front";
+  }
+
+  // Anchor at the device's side edge, vertical middle: right edge for rear,
+  // left edge for front. Returned in content-space coordinates.
+  function anchorOf(
     el: Element,
+    face: "front" | "rear",
     containerRect: DOMRect,
     scale: number,
   ): { x: number; y: number } {
     const r = el.getBoundingClientRect();
+    const x = face === "rear" ? r.right : r.left;
+    const y = r.top + r.height / 2;
     return {
-      x: (r.left + r.width / 2 - containerRect.left) / scale,
-      y: (r.top + r.height / 2 - containerRect.top) / scale,
+      x: (x - containerRect.left) / scale,
+      y: (y - containerRect.top) / scale,
     };
   }
 
@@ -96,6 +106,9 @@
       p1: { x: number; y: number };
       p2: { x: number; y: number };
       pairKey: string;
+      // Which screen side the bundle fans toward: rear endpoints → right,
+      // front endpoints → left.
+      side: "left" | "right";
     };
     const items: Item[] = [];
     for (const c of cables) {
@@ -116,6 +129,9 @@
         [el1, el2] = [bEl, aEl];
       }
 
+      const face1 = faceOf(el1);
+      const face2 = faceOf(el2);
+
       const labelParts: string[] = [];
       if (c.label) labelParts.push(c.label);
       if (c.length != null) labelParts.push(`${c.length}${c.length_unit ?? ""}`);
@@ -124,9 +140,10 @@
         id: c.id,
         color: c.color ?? "#6B7280",
         labelText: labelParts.join(" · "),
-        p1: centerOf(el1, containerRect, scale),
-        p2: centerOf(el2, containerRect, scale),
+        p1: anchorOf(el1, face1, containerRect, scale),
+        p2: anchorOf(el2, face2, containerRect, scale),
         pairKey: `${id1}|${id2}`,
+        side: face1 === "rear" || face2 === "rear" ? "right" : "left",
       });
     }
 
@@ -143,22 +160,27 @@
     for (const group of groups.values()) {
       const count = group.length;
       group.forEach((it, i) => {
-        const { p1, p2 } = it;
+        const { p1, p2, side } = it;
         const dx = p2.x - p1.x;
         const dy = p2.y - p1.y;
         const len = Math.hypot(dx, dy) || 1;
-        // Unit perpendicular to the A→B direction.
-        const nx = -dy / len;
-        const ny = dx / len;
-        // Centred offset: e.g. for 3 cables → -PAIR_SPACING, 0, +PAIR_SPACING.
-        const offset = (i - (count - 1) / 2) * PAIR_SPACING;
+        // Unit perpendicular to the A→B direction, oriented so it points toward
+        // the requested screen side (rear → right / +x, front → left / -x).
+        let nx = -dy / len;
+        let ny = dx / len;
+        const want = side === "right" ? 1 : -1;
+        if ((want === 1 && nx < 0) || (want === -1 && nx > 0)) {
+          nx = -nx;
+          ny = -ny;
+        }
+
+        // One-directional fan: the first cable runs straight along the edge,
+        // each subsequent one bows further out on the same side.
+        const mag = i * PAIR_SPACING;
         const midX = (p1.x + p2.x) / 2;
         const midY = (p1.y + p2.y) / 2;
-
-        // Always a quadratic curve; control at 2× offset puts the arc peak
-        // ≈offset away (offset 0 → control at midpoint → straight line).
-        const cx = midX + nx * offset * 2;
-        const cy = midY + ny * offset * 2;
+        const cx = midX + nx * mag;
+        const cy = midY + ny * mag;
         const d = `M ${p1.x} ${p1.y} Q ${cx} ${cy} ${p2.x} ${p2.y}`;
 
         // Stagger each cable's label to a distinct point ALONG its own arc so

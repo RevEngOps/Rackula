@@ -549,6 +549,7 @@
   bind:this={groupElement}
   data-device-id={device.slug}
   data-placed-id={placedDeviceId}
+  data-rack-view={rackView}
   data-device-position={position}
   transform="translate({RAIL_WIDTH + slotXOffset}, {yPosition})"
   class="rack-device"
