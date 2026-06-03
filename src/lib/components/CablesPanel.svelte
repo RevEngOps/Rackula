@@ -10,6 +10,7 @@
   import { getCableStore } from "$lib/stores/cables.svelte";
   import { getUIStore } from "$lib/stores/ui.svelte";
   import { getToastStore } from "$lib/stores/toast.svelte";
+  import { getSelectionStore } from "$lib/stores/selection.svelte";
   import { toHumanUnits } from "$lib/utils/position";
   import {
     getEditCableRequest,
@@ -21,6 +22,7 @@
   const cableStore = getCableStore();
   const uiStore = getUIStore();
   const toastStore = getToastStore();
+  const selectionStore = getSelectionStore();
 
   const DEFAULT_COLOUR = "#2563EB";
 
@@ -107,6 +109,29 @@
   // Face selectors only apply to devices that span both faces.
   const aSpansBoth = $derived(deviceSpansBothFaces(aDeviceId));
   const bSpansBoth = $derived(deviceSpansBothFaces(bDeviceId));
+
+  // "Pick from canvas" mode: the next device clicked in a rack fills this end.
+  let pickingTarget = $state<null | "a" | "b">(null);
+
+  function startPick(target: "a" | "b") {
+    // Toggle off if already picking the same end.
+    if (pickingTarget === target) {
+      pickingTarget = null;
+      return;
+    }
+    pickingTarget = target;
+    // Clear current selection so we only consume the next fresh click.
+    selectionStore.clearSelection();
+  }
+
+  // When armed, consume the next canvas device selection into the target field.
+  $effect(() => {
+    const id = selectionStore.selectedDeviceId;
+    if (!pickingTarget || !id) return;
+    if (pickingTarget === "a") aDeviceId = id;
+    else bDeviceId = id;
+    pickingTarget = null;
+  });
   let cableType = $state<CableType>("cat6");
   let colour = $state(DEFAULT_COLOUR);
   // Raw text in the hex field (may be mid-typing / invalid); colour only
@@ -132,6 +157,7 @@
     lengthUnit = "m";
     label = "";
     formError = null;
+    pickingTarget = null;
   }
 
   // Set the colour from a preset/native picker and keep the hex field in sync.
@@ -275,15 +301,28 @@
 
     {#if showForm}
       <form class="cable-form" onsubmit={(e) => { e.preventDefault(); submitForm(); }}>
-        <label class="field">
+        <div class="field">
           <span>From device</span>
-          <select bind:value={aDeviceId}>
-            <option value="" disabled>Select device…</option>
-            {#each deviceOptions as opt (opt.id)}
-              <option value={opt.id}>{opt.label}</option>
-            {/each}
-          </select>
-        </label>
+          <div class="device-row">
+            <select bind:value={aDeviceId}>
+              <option value="" disabled>Select device…</option>
+              {#each deviceOptions as opt (opt.id)}
+                <option value={opt.id}>{opt.label}</option>
+              {/each}
+            </select>
+            <button
+              type="button"
+              class="pick-btn"
+              class:active={pickingTarget === "a"}
+              title="Pick from rack: click a device on the canvas"
+              aria-label="Pick the from-device by clicking it on the canvas"
+              onclick={() => startPick("a")}
+            >🎯</button>
+          </div>
+          {#if pickingTarget === "a"}
+            <span class="pick-hint">Click a device on the canvas…</span>
+          {/if}
+        </div>
 
         {#if aSpansBoth}
           <label class="field">
@@ -300,15 +339,28 @@
           <input type="text" bind:value={aInterface} placeholder="e.g. Gi1/0/1" />
         </label>
 
-        <label class="field">
+        <div class="field">
           <span>To device</span>
-          <select bind:value={bDeviceId}>
-            <option value="" disabled>Select device…</option>
-            {#each deviceOptions as opt (opt.id)}
-              <option value={opt.id}>{opt.label}</option>
-            {/each}
-          </select>
-        </label>
+          <div class="device-row">
+            <select bind:value={bDeviceId}>
+              <option value="" disabled>Select device…</option>
+              {#each deviceOptions as opt (opt.id)}
+                <option value={opt.id}>{opt.label}</option>
+              {/each}
+            </select>
+            <button
+              type="button"
+              class="pick-btn"
+              class:active={pickingTarget === "b"}
+              title="Pick from rack: click a device on the canvas"
+              aria-label="Pick the to-device by clicking it on the canvas"
+              onclick={() => startPick("b")}
+            >🎯</button>
+          </div>
+          {#if pickingTarget === "b"}
+            <span class="pick-hint">Click a device on the canvas…</span>
+          {/if}
+        </div>
 
         {#if bSpansBoth}
           <label class="field">
@@ -524,6 +576,43 @@
     color: var(--colour-text);
     font-size: var(--font-size-sm);
     width: 100%;
+  }
+
+  .device-row {
+    display: flex;
+    gap: var(--space-1);
+    align-items: stretch;
+  }
+
+  .device-row select {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .pick-btn {
+    flex: 0 0 auto;
+    width: 2rem;
+    border: 1px solid var(--colour-border);
+    border-radius: var(--radius-sm);
+    background: var(--colour-surface, transparent);
+    color: var(--colour-text);
+    cursor: pointer;
+    font-size: var(--font-size-sm);
+    line-height: 1;
+  }
+
+  .pick-btn:hover {
+    border-color: var(--colour-selection);
+  }
+
+  .pick-btn.active {
+    border-color: var(--colour-selection);
+    box-shadow: 0 0 0 2px var(--colour-selection) inset;
+  }
+
+  .pick-hint {
+    color: var(--colour-selection);
+    font-size: var(--font-size-xs, 0.75rem);
   }
 
   .swatches {
