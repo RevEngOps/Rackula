@@ -16,6 +16,7 @@
     getEditCableRequest,
     clearEditCableRequest,
   } from "$lib/stores/cableEdit.svelte";
+  import { setCableFocusDevice } from "$lib/stores/cableFocus.svelte";
   import type { Cable, CableType, LengthUnit } from "$lib/types";
 
   const layoutStore = getLayoutStore();
@@ -83,6 +84,26 @@
   });
 
   const cables = $derived(cableStore.cables);
+
+  // Filter the list/highlight to the selected device's cables.
+  let filterBySelection = $state(false);
+  const filterDeviceId = $derived(
+    filterBySelection ? selectionStore.selectedDeviceId : null,
+  );
+  const visibleCables = $derived(
+    filterDeviceId
+      ? cables.filter(
+          (c) =>
+            c.a_device_id === filterDeviceId || c.b_device_id === filterDeviceId,
+        )
+      : cables,
+  );
+
+  // Drive the canvas highlight from the active filter; clear on unmount.
+  $effect(() => {
+    setCableFocusDevice(filterDeviceId);
+    return () => setCableFocusDevice(null);
+  });
 
   function deviceLabel(id: string): string {
     return deviceOptions.find((o) => o.id === id)?.label ?? "(removed device)";
@@ -386,7 +407,30 @@
           onclick={() => (showReport = !showReport)}
           aria-expanded={showReport}
         >📊 Report</button>
+        <button
+          class="add-btn"
+          class:active={filterBySelection}
+          onclick={() => (filterBySelection = !filterBySelection)}
+          aria-pressed={filterBySelection}
+          title="Show only cables connected to the device selected on the canvas"
+        >🔍 By device</button>
       </div>
+
+      {#if filterBySelection}
+        <div class="filter-chip">
+          {#if filterDeviceId}
+            <span>Cables for: <strong>{deviceLabel(filterDeviceId)}</strong></span>
+          {:else}
+            <span>Click a device on the canvas to filter…</span>
+          {/if}
+          <button
+            class="filter-clear"
+            title="Clear device filter"
+            aria-label="Clear device filter"
+            onclick={() => (filterBySelection = false)}
+          >✕</button>
+        </div>
+      {/if}
     {/if}
 
     {#if showReport && !showForm}
@@ -591,7 +635,7 @@
     {/if}
 
     <ul class="cable-list">
-      {#each cables as cable (cable.id)}
+      {#each visibleCables as cable (cable.id)}
         <li class="cable-item">
           <span class="cable-colour" style="background:{cable.color ?? '#6B7280'}"></span>
           <div class="cable-info">
@@ -617,7 +661,11 @@
           </div>
         </li>
       {:else}
-        <li class="empty-item">No cables yet. Add one to connect two devices.</li>
+        <li class="empty-item">
+          {filterDeviceId
+            ? "No cables connected to the selected device."
+            : "No cables yet. Add one to connect two devices."}
+        </li>
       {/each}
     </ul>
   {/if}
@@ -685,6 +733,37 @@
     display: flex;
     gap: var(--space-2);
     flex-wrap: wrap;
+  }
+
+  .filter-chip {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-1) var(--space-2);
+    border: 1px solid var(--colour-selection);
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--colour-selection) 12%, transparent);
+    font-size: var(--font-size-sm);
+  }
+
+  .filter-chip span {
+    flex: 1;
+    min-width: 0;
+    word-break: break-word;
+  }
+
+  .filter-clear {
+    flex: 0 0 auto;
+    border: none;
+    background: transparent;
+    color: var(--colour-text-muted);
+    cursor: pointer;
+    font-size: var(--font-size-sm);
+    padding: 0 var(--space-1);
+  }
+
+  .filter-clear:hover {
+    color: var(--colour-text);
   }
 
   .report {

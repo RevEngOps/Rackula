@@ -20,6 +20,7 @@
     type CableTooltipInfo,
   } from "$lib/stores/cableTooltip.svelte";
   import { requestEditCable } from "$lib/stores/cableEdit.svelte";
+  import { getCableFocusDevice } from "$lib/stores/cableFocus.svelte";
   import { getToastStore } from "$lib/stores/toast.svelte";
   import CableContextMenu from "./CableContextMenu.svelte";
 
@@ -33,6 +34,8 @@
   let segments = $state<
     Array<{
       id: string;
+      aDeviceId: string;
+      bDeviceId: string;
       color: string;
       d: string;
       ax: number;
@@ -54,18 +57,29 @@
   // Id of the cable pinned by a click (stays highlighted until cleared).
   let selectedCableId = $state<string | null>(null);
 
-  // Clear the pinned cable on an outside click or Escape. Cable clicks call
-  // stopPropagation, so they don't reach this document listener.
+  // Clear the pinned cable on an outside click or Escape. Cable/label clicks
+  // call stopPropagation, so they don't reach this document listener. A click
+  // that follows a drag (panning the canvas) is ignored so the pin survives.
   $effect(() => {
-    const onDocClick = () => {
+    let downX = 0;
+    let downY = 0;
+    const onPointerDown = (e: PointerEvent) => {
+      downX = e.clientX;
+      downY = e.clientY;
+    };
+    const onDocClick = (e: MouseEvent) => {
+      const moved = Math.hypot(e.clientX - downX, e.clientY - downY);
+      if (moved > 6) return; // treated as a drag/pan — keep the pinned cable
       selectedCableId = null;
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") selectedCableId = null;
     };
+    document.addEventListener("pointerdown", onPointerDown, true);
     document.addEventListener("click", onDocClick);
     window.addEventListener("keydown", onKey);
     return () => {
+      document.removeEventListener("pointerdown", onPointerDown, true);
       document.removeEventListener("click", onDocClick);
       window.removeEventListener("keydown", onKey);
     };
@@ -115,6 +129,8 @@
   const PAIR_SPACING = 34;
 
   const cables = $derived(cableStore.cables);
+  // Device whose cables are filtered/highlighted (set by the Cables panel).
+  const focusDeviceId = $derived(getCableFocusDevice());
 
   // Changes whenever device geometry that affects positions changes.
   const geometrySignal = $derived(
@@ -212,6 +228,8 @@
     //    cable on the same device pair shares one orientation for fanning out.
     type Item = {
       id: string;
+      aDeviceId: string;
+      bDeviceId: string;
       color: string;
       labelText: string;
       p1: { x: number; y: number };
@@ -269,6 +287,8 @@
 
       items.push({
         id: c.id,
+        aDeviceId: c.a_device_id,
+        bDeviceId: c.b_device_id,
         color: c.color ?? "#6B7280",
         labelText: labelParts.join(" · "),
         p1,
@@ -369,6 +389,8 @@
           baseX,
           seg: {
             id: it.id,
+            aDeviceId: it.aDeviceId,
+            bDeviceId: it.bDeviceId,
             color: it.color,
             d,
             ax: p1.x,
@@ -468,9 +490,13 @@
 {#if uiStore.showCables}
   <svg class="cable-overlay" bind:this={svgEl} aria-hidden="true">
     {#each segments as seg (seg.id)}
+      {@const touchesFocus =
+        focusDeviceId !== null &&
+        (seg.aDeviceId === focusDeviceId || seg.bDeviceId === focusDeviceId)}
       {@const isSelected = selectedCableId === seg.id}
-      {@const isEmph = isSelected || hoveredId === seg.id}
-      {@const dimmed = selectedCableId !== null && !isEmph}
+      {@const isEmph = isSelected || hoveredId === seg.id || touchesFocus}
+      {@const contextActive = selectedCableId !== null || focusDeviceId !== null}
+      {@const dimmed = contextActive && !isEmph}
       <g class="cable-line">
         {#if isSelected}
           <!-- Halo behind the pinned cable so it stands out -->
