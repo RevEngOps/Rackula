@@ -155,21 +155,19 @@
         const midX = (p1.x + p2.x) / 2;
         const midY = (p1.y + p2.y) / 2;
 
-        let d: string;
-        let labelX: number;
-        let labelY: number;
-        if (offset === 0) {
-          d = `M ${p1.x} ${p1.y} L ${p2.x} ${p2.y}`;
-          labelX = midX;
-          labelY = midY - 4;
-        } else {
-          // Quadratic curve; control point at 2× offset puts the arc peak ≈offset away.
-          const cx = midX + nx * offset * 2;
-          const cy = midY + ny * offset * 2;
-          d = `M ${p1.x} ${p1.y} Q ${cx} ${cy} ${p2.x} ${p2.y}`;
-          labelX = midX + nx * offset;
-          labelY = midY + ny * offset;
-        }
+        // Always a quadratic curve; control at 2× offset puts the arc peak
+        // ≈offset away (offset 0 → control at midpoint → straight line).
+        const cx = midX + nx * offset * 2;
+        const cy = midY + ny * offset * 2;
+        const d = `M ${p1.x} ${p1.y} Q ${cx} ${cy} ${p2.x} ${p2.y}`;
+
+        // Stagger each cable's label to a distinct point ALONG its own arc so
+        // labels for multiple cables on the same pair don't stack on top of
+        // each other. t spreads evenly across the bundle (e.g. 1/4, 2/4, 3/4).
+        const t = count > 1 ? (i + 1) / (count + 1) : 0.5;
+        const mt = 1 - t;
+        const labelX = mt * mt * p1.x + 2 * mt * t * cx + t * t * p2.x;
+        const labelY = mt * mt * p1.y + 2 * mt * t * cy + t * t * p2.y - 4;
 
         next.push({
           id: it.id,
