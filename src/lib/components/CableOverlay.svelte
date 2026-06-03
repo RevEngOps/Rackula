@@ -132,6 +132,36 @@
   // Device whose cables are filtered/highlighted (set by the Cables panel).
   const focusDeviceId = $derived(getCableFocusDevice());
 
+  // When a cable is clicked, highlight it AND every other cable that shares a
+  // port (same device + interface) with it — so signals fanned through a patch
+  // panel or tap light up together. Falls back to just the clicked cable when
+  // it has no defined ports.
+  const selectedGroup = $derived.by(() => {
+    // eslint-disable-next-line svelte/prefer-svelte-reactivity
+    const set = new Set<string>();
+    if (!selectedCableId) return set;
+    set.add(selectedCableId);
+    const sel = cables.find((c) => c.id === selectedCableId);
+    if (!sel) return set;
+
+    const portKey = (dev: string, iface?: string) =>
+      iface ? `${dev}|${iface}` : null;
+    // eslint-disable-next-line svelte/prefer-svelte-reactivity
+    const ports = new Set<string>();
+    const ka = portKey(sel.a_device_id, sel.a_interface);
+    const kb = portKey(sel.b_device_id, sel.b_interface);
+    if (ka) ports.add(ka);
+    if (kb) ports.add(kb);
+    if (ports.size === 0) return set; // no ports defined → just this cable
+
+    for (const c of cables) {
+      const ca = portKey(c.a_device_id, c.a_interface);
+      const cb = portKey(c.b_device_id, c.b_interface);
+      if ((ca && ports.has(ca)) || (cb && ports.has(cb))) set.add(c.id);
+    }
+    return set;
+  });
+
   // Changes whenever device geometry that affects positions changes.
   const geometrySignal = $derived(
     JSON.stringify(
@@ -493,9 +523,9 @@
       {@const touchesFocus =
         focusDeviceId !== null &&
         (seg.aDeviceId === focusDeviceId || seg.bDeviceId === focusDeviceId)}
-      {@const isSelected = selectedCableId === seg.id}
+      {@const isSelected = selectedGroup.has(seg.id)}
       {@const isEmph = isSelected || hoveredId === seg.id || touchesFocus}
-      {@const contextActive = selectedCableId !== null || focusDeviceId !== null}
+      {@const contextActive = selectedGroup.size > 0 || focusDeviceId !== null}
       {@const dimmed = contextActive && !isEmph}
       <g class="cable-line">
         {#if isSelected}
