@@ -221,13 +221,14 @@
     face: "front" | "rear",
     containerRect: DOMRect,
     scale: number,
-  ): { x: number; y: number } {
+  ): { x: number; y: number; top: number } {
     const r = el.getBoundingClientRect();
     const x = face === "rear" ? r.right : r.left;
     const y = r.top + r.height / 2;
     return {
       x: (x - containerRect.left) / scale,
       y: (y - containerRect.top) / scale,
+      top: (r.top - containerRect.top) / scale,
     };
   }
 
@@ -254,6 +255,15 @@
     const scale =
       layoutWidth > 0 ? containerRect.width / layoutWidth : canvasStore.zoom || 1;
 
+    // Map each placed device to its rack so we can tell cross-rack cables apart.
+    const deviceRack = new Map<string, string>();
+    for (const rack of layoutStore.racks) {
+      for (const d of rack.devices) deviceRack.set(d.id, rack.id);
+    }
+    // Top of the rendered racks (content space) — cross-rack cables route above
+    // this. Seeded high; narrowed as we measure devices.
+    let racksTop = Number.POSITIVE_INFINITY;
+
     // 1. Collect renderable cables with canonical (id-sorted) endpoints so every
     //    cable on the same device pair shares one orientation for fanning out.
     type Item = {
@@ -276,6 +286,12 @@
       cxRep: number;
       // Assigned lane (0 = hugs the edge); larger lanes bow further out.
       lane: number;
+      // True when the endpoints are in different racks (route over the top).
+      crossRack: boolean;
+      // Outward direction for each endpoint by face: front → -1 (left),
+      // rear → +1 (right). Used to exit cross-rack cables on the outer side.
+      dirA: number;
+      dirB: number;
     };
     const items: Item[] = [];
     for (const c of cables) {
@@ -314,6 +330,12 @@
 
       const p1 = anchorOf(el1, face1, containerRect, scale);
       const p2 = anchorOf(el2, face2, containerRect, scale);
+      racksTop = Math.min(racksTop, p1.top, p2.top);
+
+      const rackA = deviceRack.get(c.a_device_id);
+      const rackB = deviceRack.get(c.b_device_id);
+      const crossRack =
+        rackA !== undefined && rackB !== undefined && rackA !== rackB;
 
       items.push({
         id: c.id,
@@ -330,6 +352,9 @@
         yMax: Math.max(p1.y, p2.y),
         cxRep: (p1.x + p2.x) / 2,
         lane: 0,
+        crossRack,
+        dirA: face1 === "rear" ? 1 : -1,
+        dirB: face2 === "rear" ? 1 : -1,
       });
     }
 
@@ -390,30 +415,64 @@
     };
     const placed: Placed[] = [];
 
+    // Bus line above the racks for routing cross-rack cables over the top.
+    const busBase = Number.isFinite(racksTop) ? racksTop - 28 : 0;
+
     for (const group of groups.values()) {
       const first = group[0]!;
       const { p1, p2, side } = first;
       const dirX = side === "right" ? 1 : -1;
       const y1 = p1.y;
       const y2 = p2.y;
-      const midY = (y1 + y2) / 2;
-      const trackMin = Math.min(y1, y2);
-      const trackMax = Math.max(y1, y2);
-      // Outermost endpoint x — brackets stick out beyond this on the fan side.
-      const baseX = side === "right" ? Math.max(p1.x, p2.x) : Math.min(p1.x, p2.x);
+      const crossRack = first.crossRack;
+      // Cross-rack cables exit each end on its own face's outer side (front →
+      // left, rear → right); the A-side direction also decides which side its
+      // label column sits on.
+      const crossSide: "left" | "right" = first.dirA > 0 ? "right" : "left";
+      const placedSide = crossRack ? crossSide : side;
+      // Outermost endpoint x — same-rack brackets stick out beyond this.
+      const sameRackBaseX =
+        side === "right" ? Math.max(p1.x, p2.x) : Math.min(p1.x, p2.x);
 
       for (const it of group) {
-        // Squared (orthogonal) route: out from the device edge to this lane's x,
-        // along to the other endpoint's y, then back. Lane comes from the global
-        // assignment so overlapping cables get distinct, well-separated tracks.
         const mag = it.lane * PAIR_SPACING;
-        const laneX = baseX + dirX * mag;
-        const d = `M ${p1.x} ${y1} L ${laneX} ${y1} L ${laneX} ${y2} L ${p2.x} ${y2}`;
+        let d: string;
+        let attachX: number;
+        let attachY: number;
+        let trackMin: number;
+        let trackMax: number;
+        let baseX: number;
+
+        if (crossRack) {
+          // Route up and over the top of the racks instead of cutting across:
+          // out each device's OUTER side (front → left, rear → right), up
+          // beside the rack, across above the racks, then down. Staggered by lane.
+          const stubX1 = p1.x + first.dirA * (16 + mag);
+          const stubX2 = p2.x + first.dirB * (16 + mag);
+          const busY = busBase - it.lane * 12;
+          d = `M ${p1.x} ${y1} L ${stubX1} ${y1} L ${stubX1} ${busY} L ${stubX2} ${busY} L ${stubX2} ${y2} L ${p2.x} ${y2}`;
+          // Label attaches along the A-side vertical stub.
+          attachX = stubX1;
+          baseX = p1.x;
+          trackMin = Math.min(y1, busY);
+          trackMax = Math.max(y1, busY);
+          attachY = (y1 + busY) / 2;
+        } else {
+          // Squared (orthogonal) route within a rack: out to this lane's x,
+          // along to the other endpoint's y, then back.
+          const laneX = sameRackBaseX + dirX * mag;
+          d = `M ${p1.x} ${y1} L ${laneX} ${y1} L ${laneX} ${y2} L ${p2.x} ${y2}`;
+          attachX = laneX;
+          baseX = sameRackBaseX;
+          trackMin = Math.min(y1, y2);
+          trackMax = Math.max(y1, y2);
+          attachY = (y1 + y2) / 2;
+        }
 
         placed.push({
-          side,
-          attachX: laneX,
-          attachY: midY,
+          side: placedSide,
+          attachX,
+          attachY,
           trackMin,
           trackMax,
           baseX,
@@ -430,8 +489,8 @@
             labelX: 0,
             labelY: 0,
             labelText: it.labelText,
-            labelAnchor: side === "right" ? "start" : "end",
-            leader: { x1: laneX, y1: midY, x2: 0, y2: 0 },
+            labelAnchor: placedSide === "right" ? "start" : "end",
+            leader: { x1: attachX, y1: attachY, x2: 0, y2: 0 },
             info: it.info,
           },
         });
