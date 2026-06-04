@@ -21,6 +21,10 @@
   } from "$lib/stores/cableTooltip.svelte";
   import { requestEditCable } from "$lib/stores/cableEdit.svelte";
   import { getCableFocusDevice } from "$lib/stores/cableFocus.svelte";
+  import {
+    isCableTypeVisible,
+    getHiddenCableTypes,
+  } from "$lib/stores/cableTypeFilter.svelte";
   import { getToastStore } from "$lib/stores/toast.svelte";
   import CableContextMenu from "./CableContextMenu.svelte";
 
@@ -131,6 +135,8 @@
   const cables = $derived(cableStore.cables);
   // Device whose cables are filtered/highlighted (set by the Cables panel).
   const focusDeviceId = $derived(getCableFocusDevice());
+  // Serialised hidden-types map so recompute re-runs when visibility toggles.
+  const hiddenTypesSignal = $derived(JSON.stringify(getHiddenCableTypes()));
 
   // When a cable is clicked, highlight it AND every other cable that shares a
   // port (same device + interface) with it — so signals fanned through a patch
@@ -295,6 +301,7 @@
     };
     const items: Item[] = [];
     for (const c of cables) {
+      if (!isCableTypeVisible(c.type)) continue; // type hidden from the overlay
       const aEl = findDeviceEl(container, c.a_device_id, c.a_face);
       const bEl = findDeviceEl(container, c.b_device_id, c.b_face);
       if (!aEl || !bEl) continue; // device not currently rendered (e.g. other rack on mobile)
@@ -553,6 +560,7 @@
     void canvasStore.zoom;
     void resizeTick;
     void svgEl;
+    void hiddenTypesSignal;
     recompute();
   });
 

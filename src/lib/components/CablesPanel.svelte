@@ -17,6 +17,10 @@
     clearEditCableRequest,
   } from "$lib/stores/cableEdit.svelte";
   import { setCableFocusDevice } from "$lib/stores/cableFocus.svelte";
+  import {
+    isCableTypeVisible,
+    toggleCableTypeVisibility,
+  } from "$lib/stores/cableTypeFilter.svelte";
   import type { Cable, CableType, LengthUnit } from "$lib/types";
 
   const layoutStore = getLayoutStore();
@@ -143,14 +147,19 @@
       for (const d of rack.devices) deviceRack.set(d.id, rack.id);
     }
 
-    // A cable counts if either endpoint sits in a selected rack.
+    // A cable counts if either endpoint sits in a selected rack — and, when
+    // the "By device" filter is active, if it also connects to that device.
     const included = cables.filter((c) => {
       const ra = deviceRack.get(c.a_device_id);
       const rb = deviceRack.get(c.b_device_id);
-      return (
+      const rackOk =
         (ra !== undefined && isRackSelected(ra)) ||
-        (rb !== undefined && isRackSelected(rb))
-      );
+        (rb !== undefined && isRackSelected(rb));
+      const deviceOk =
+        !filterDeviceId ||
+        c.a_device_id === filterDeviceId ||
+        c.b_device_id === filterDeviceId;
+      return rackOk && deviceOk;
     });
 
     const groups = new Map<string, ReportRow>();
@@ -198,6 +207,16 @@
   function cableTypeLabel(type: CableType | undefined): string {
     return CABLE_TYPES.find((t) => t.value === type)?.label ?? "Cable";
   }
+
+  // Distinct cable types present in the layout, for the show/hide chips.
+  const presentTypes = $derived.by(() => {
+    const map = new Map<string, { type: CableType | undefined; label: string }>();
+    for (const c of cables) {
+      const k = c.type ?? "__untyped";
+      if (!map.has(k)) map.set(k, { type: c.type, label: cableTypeLabel(c.type) });
+    }
+    return [...map.values()].sort((a, b) => a.label.localeCompare(b.label));
+  });
 
   // --- Form state ---
   let showForm = $state(false);
@@ -431,6 +450,24 @@
           >✕</button>
         </div>
       {/if}
+
+      {#if presentTypes.length > 1}
+        <div class="type-filter">
+          <span class="type-filter-label">Show on rack:</span>
+          {#each presentTypes as t (t.label)}
+            <button
+              type="button"
+              class="type-chip"
+              class:off={!isCableTypeVisible(t.type)}
+              aria-pressed={isCableTypeVisible(t.type)}
+              title={isCableTypeVisible(t.type)
+                ? `Hide ${t.label} cables`
+                : `Show ${t.label} cables`}
+              onclick={() => toggleCableTypeVisibility(t.type)}
+            >{t.label}</button>
+          {/each}
+        </div>
+      {/if}
     {/if}
 
     {#if showReport && !showForm}
@@ -449,8 +486,16 @@
           {/each}
         </div>
 
+        {#if filterDeviceId}
+          <p class="report-scope">Filtered to <strong>{deviceLabel(filterDeviceId)}</strong> (By device is on)</p>
+        {/if}
+
         {#if report.rows.length === 0}
-          <p class="empty">No cables in the selected racks.</p>
+          <p class="empty">
+            {filterDeviceId
+              ? "No cables for the selected device in these racks."
+              : "No cables in the selected racks."}
+          </p>
         {:else}
           <table class="report-table">
             <thead>
@@ -735,6 +780,34 @@
     flex-wrap: wrap;
   }
 
+  .type-filter {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-1);
+  }
+
+  .type-filter-label {
+    color: var(--colour-text-muted);
+    font-size: var(--font-size-sm);
+    margin-right: var(--space-1);
+  }
+
+  .type-chip {
+    padding: 2px var(--space-2);
+    border: 1px solid var(--colour-border);
+    border-radius: 999px;
+    background: var(--colour-surface, transparent);
+    color: var(--colour-text);
+    cursor: pointer;
+    font-size: var(--font-size-xs, 0.75rem);
+  }
+
+  .type-chip.off {
+    opacity: 0.45;
+    text-decoration: line-through;
+  }
+
   .filter-chip {
     display: flex;
     align-items: center;
@@ -786,6 +859,12 @@
   .report-label {
     color: var(--colour-text-muted);
     font-size: var(--font-size-sm);
+  }
+
+  .report-scope {
+    margin: 0;
+    font-size: var(--font-size-sm);
+    color: var(--colour-selection);
   }
 
   .report-rack {
